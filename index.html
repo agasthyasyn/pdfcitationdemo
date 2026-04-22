@@ -1,1 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Campbell Shipping PDF Highlight Demo</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <h1>Campbell Shipping PDF Highlight Demo</h1>
+      <p>PDF page viewer with reference text highlight</p>
+    </header>
 
+    <section class="controls">
+      <div class="control-group">
+        <label for="pageInput">Page Number</label>
+        <input type="number" id="pageInput" value="2" min="1" />
+      </div>
+
+      <div class="control-group text-group">
+        <label for="highlightInput">Text to Highlight</label>
+        <input
+          type="text"
+          id="highlightInput"
+          value="BERTH DEPTH: 13.2 mtrs"
+        />
+      </div>
+
+      <button id="loadBtn">Load PDF</button>
+    </section>
+
+    <section class="viewer-wrapper">
+      <aside class="side-panel">
+        <h2>Reference</h2>
+        <p><strong>File:</strong> sample.pdf</p>
+        <p><strong>Status:</strong> <span id="status">Waiting to load</span></p>
+        <p><strong>Target Text:</strong></p>
+        <div id="targetTextBox" class="target-box">BERTH DEPTH: 13.2 mtrs</div>
+      </aside>
+
+      <main class="viewer-panel">
+        <div id="pdf-container"></div>
+      </main>
+    </section>
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.4.168/pdf.min.mjs" type="module"></script>
+  <script src="script.js" type="module"></script>
+</body>
+</html>
