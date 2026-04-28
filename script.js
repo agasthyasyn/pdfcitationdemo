@@ -11,7 +11,7 @@ const highlightInput = document.getElementById("highlightInput");
 const statusEl = document.getElementById("status");
 const targetTextBox = document.getElementById("targetTextBox");
 
-const PDF_FILE = "sample.pdf";
+const PDF_FILE = "CS Jaden Port information Port manatee, Tampa, USA.pdf";
 
 loadBtn.addEventListener("click", () => {
   loadSinglePagePdf();
