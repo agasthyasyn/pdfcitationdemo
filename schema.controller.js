@@ -50,22 +50,18 @@ const FALLBACK_TEMPLATE_CONTROLLER = {
 
 export async function loadTemplateController() {
   try {
-    const ref = doc(db, "templateSchemas", "generic_template_alignment");
+    const ref = doc(db, "templateSchemas", "EKsLu4CtBolKNKDssJNe");
     const snap = await getDoc(ref);
 
     if (!snap.exists()) {
-      console.warn(
-        "Firebase controller document not found. Using local fallback controller."
-      );
+      console.warn("Firebase controller document not found. Using fallback controller.");
       return FALLBACK_TEMPLATE_CONTROLLER;
     }
 
     const controller = snap.data();
 
     if (!controller.active) {
-      console.warn(
-        "Firebase controller is inactive. Using local fallback controller."
-      );
+      console.warn("Firebase controller is inactive. Using fallback controller.");
       return FALLBACK_TEMPLATE_CONTROLLER;
     }
 
@@ -74,11 +70,7 @@ export async function loadTemplateController() {
       ...controller
     };
   } catch (error) {
-    console.warn(
-      "Firebase controller could not be loaded. Using local fallback controller.",
-      error
-    );
-
+    console.warn("Firebase controller load failed. Using fallback controller.", error);
     return FALLBACK_TEMPLATE_CONTROLLER;
   }
 }
