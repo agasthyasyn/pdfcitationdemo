@@ -6,39 +6,23 @@ pdfjsLib.GlobalWorkerOptions.workerSrc =
 const { PDFDocument, StandardFonts, rgb } = window.PDFLib;
 
 /* =========================================================
-   CLEAN TEMPLATE-BASED PDF DOCUMENT BUILDER
+   ROBUST PDF TEMPLATE FORMATTER
    =========================================================
 
-   Purpose:
-   - Use a sample/template PDF only to understand the expected document structure.
-   - Rebuild uploaded source PDFs into a clean, consistent business document.
-   - Keep all useful source text.
-   - Avoid system notes, source-page labels, original-source sections, and unwanted titles.
-   - Keep preview and PDF export based on the same structured output.
-   - Carry visual content/images as best-effort mapped figures using PDF page rendering.
+   This replacement script creates a clean document in a standardized style:
+   - Title
+   - Key Information header table
+   - Visual References section
+   - Segregated operational sections
+   - Missing common fields shown as "Not Available"
+   - No system notes, source labels, audit notes, or original-source sections in output
+   - Preview and PDF export are generated from the same document model
+   - Best-effort visual extraction that avoids normal text/header/footer regions
 
-   Important browser limitation:
-   - Browser-side PDF.js can reliably extract text and render pages.
-   - True embedded-image extraction from arbitrary PDFs is inconsistent across PDFs.
-   - This script therefore uses a safer approach:
-     1. Detect pages that likely contain visual content.
-     2. Render those pages.
-     3. Crop non-header/non-footer visual areas when possible.
-     4. Attach those figures to the closest relevant document section.
-
-   Required HTML IDs expected by this script:
-   - templatePdfInput
-   - sourcePdfInput
-   - templateFileInfo
-   - sourceFileInfo
-   - processBtn
-   - exportPdfBtn
-   - exportAuditBtn
-   - resetBtn
-   - statusText
-   - detectedDetails
-   - snapshotList
-   - formattedPreview
+   Expected HTML IDs:
+   templatePdfInput, sourcePdfInput, templateFileInfo, sourceFileInfo,
+   processBtn, exportPdfBtn, exportAuditBtn, resetBtn,
+   statusText, detectedDetails, snapshotList, formattedPreview
 */
 
 const els = {
@@ -65,48 +49,75 @@ const state = {
   auditLog: null
 };
 
+const HEADER_ROWS = [
+  ["Vessel Name", "Port Name"],
+  ["Country", "UNLOCODE / UNCTAD Code"],
+  ["Latitude / Longitude / Position", "Time Zone"],
+  ["Port Stay / Date", "Berth / Pier / Terminal"],
+  ["Cargo", "Cargo Operations / Rate"],
+  ["Depth / Draft / Channel", "Density"],
+  ["Tidal Range", "Security Level"],
+  ["VHF / Communication", "Agent / Contact"],
+  ["Publications / Charts", "Additional Reference"]
+];
+
+const FIELD_ALIASES = {
+  "Vessel Name": ["vessel", "vessel name", "ship", "mv", "m/v"],
+  "Port Name": ["port", "port name", "location"],
+  "Country": ["country"],
+  "UNLOCODE / UNCTAD Code": ["unlocode", "unctad", "un/locode", "code"],
+  "Latitude / Longitude / Position": ["lat", "long", "latitude", "longitude", "position"],
+  "Time Zone": ["time zone", "local time", "gmt", "utc"],
+  "Port Stay / Date": ["port stay", "date", "arrival", "berthing", "departure", "eta", "etb", "etd"],
+  "Berth / Pier / Terminal": ["berth", "pier", "terminal", "jetty"],
+  "Cargo": ["cargo", "commodity"],
+  "Cargo Operations / Rate": ["loading rate", "discharging rate", "cargo operation", "cargo operations", "rate", "shore scale"],
+  "Depth / Draft / Channel": ["depth", "draft", "draught", "channel", "fairway"],
+  "Density": ["density", "water density"],
+  "Tidal Range": ["tidal range", "tide", "average tide"],
+  "Security Level": ["security level", "isps", "level"],
+  "VHF / Communication": ["vhf", "channel", "communication", "radio"],
+  "Agent / Contact": ["agent", "agency", "contact"],
+  "Publications / Charts": ["publication", "publications", "chart", "charts", "alrs"],
+  "Additional Reference": ["reference", "remarks"]
+};
+
+const STANDARD_SECTIONS = [
+  "Port Overview / About",
+  "Arrival / Port Stay Details",
+  "Anchorage",
+  "Pilotage / Approach / Navigation",
+  "Berth / Terminal / Depth",
+  "Cargo Operations",
+  "Agents / Contacts",
+  "Pre-Arrival Documents / Formalities",
+  "Regulations / Security / Health",
+  "Services / Supplies / Waste",
+  "Publications / Charts",
+  "Operational Experience / Remarks",
+  "Detailed Notes"
+];
+
 const CONFIG = {
-  extraction: {
-    lineYTolerance: 3.5,
-    wordGapMultiplier: 0.55,
-    minVisualAreaRatio: 0.08,
-    maxVisualsPerDocument: 8,
-    renderScale: 1.6
-  },
-  mapping: {
-    minScore: 0.18,
-    strongScore: 0.38,
-    keepUnmappedContent: true
-  },
-  structure: {
-    minHeadingLength: 3,
-    maxHeadingLength: 110,
-    maxTemplateSections: 45,
-    fallbackSections: [
-      "Port Information",
-      "Vessel Details",
-      "Arrival / Berthing / Departure Details",
-      "Berth / Terminal Details",
-      "Cargo / Operations Details",
-      "Restrictions / Requirements",
-      "Agency / Contact Details",
-      "Additional Details"
-    ]
-  },
   output: {
     pageWidth: 595.28,
     pageHeight: 841.89,
     margin: 42,
-    bodyFontSize: 9.4,
-    headingFontSize: 12,
-    titleFontSize: 15,
-    lineHeight: 12.4,
-    paragraphGap: 8,
-    sectionGap: 15,
-    figureMaxHeight: 210
+    titleSize: 15,
+    headingSize: 12,
+    bodySize: 9.2,
+    lineHeight: 12.2,
+    tableRowHeight: 25,
+    figureMaxHeight: 215
   },
-  labelsToRemove: [
+  extraction: {
+    yTolerance: 3.5,
+    renderScale: 1.7,
+    maxVisualsPerDocument: 10
+  },
+  blockedOutputLabels: [
     "formatted document",
+    "standardized format",
     "template based standardized document",
     "template-based standardized document",
     "source preservation appendix",
@@ -117,978 +128,557 @@ const CONFIG = {
     "generated on",
     "generated at",
     "original source",
-    "unmapped additional source content",
-    "additional source content",
     "system note",
-    "audit note"
+    "audit note",
+    "unmapped additional source content",
+    "additional source content"
   ]
 };
 
 bindEvents();
-setInitialState();
-
-/* =========================================================
-   EVENTS
-   ========================================================= */
+resetOutputOnly();
+setStatus("Upload a template PDF and source PDF(s).");
 
 function bindEvents() {
-  els.templatePdfInput?.addEventListener("change", handleTemplateUpload);
-  els.sourcePdfInput?.addEventListener("change", handleSourceUpload);
+  els.templatePdfInput?.addEventListener("change", (event) => {
+    state.templateFile = event.target.files?.[0] || null;
+    els.templateFileInfo.textContent = state.templateFile
+      ? `Template selected: ${state.templateFile.name}`
+      : "No template uploaded yet.";
+    setStatus(state.templateFile ? "Template uploaded." : "Template removed.");
+  });
+
+  els.sourcePdfInput?.addEventListener("change", (event) => {
+    state.sourceFiles = Array.from(event.target.files || []);
+    els.sourceFileInfo.innerHTML = state.sourceFiles.length
+      ? state.sourceFiles.map((file, i) => `${i + 1}. ${escapeHtml(file.name)}`).join("<br>")
+      : "No source documents uploaded yet.";
+    setStatus(state.sourceFiles.length ? `${state.sourceFiles.length} source PDF(s) uploaded.` : "Source removed.");
+  });
+
   els.processBtn?.addEventListener("click", processDocuments);
   els.exportPdfBtn?.addEventListener("click", exportPdf);
   els.exportAuditBtn?.addEventListener("click", exportAuditLog);
   els.resetBtn?.addEventListener("click", resetTool);
 }
 
-function setInitialState() {
-  if (els.exportPdfBtn) els.exportPdfBtn.disabled = true;
-  if (els.exportAuditBtn) els.exportAuditBtn.disabled = true;
-  setStatus("Upload a template PDF and one or more source PDFs.");
-}
-
-function handleTemplateUpload(event) {
-  const file = event.target.files?.[0] || null;
-  state.templateFile = file;
-  state.templateProfile = null;
-
-  if (!file) {
-    els.templateFileInfo.textContent = "No template uploaded yet.";
-    setStatus("Template removed.");
-    return;
-  }
-
-  els.templateFileInfo.textContent = `Template selected: ${file.name}`;
-  setStatus("Template PDF uploaded.");
-}
-
-function handleSourceUpload(event) {
-  const files = Array.from(event.target.files || []);
-  state.sourceFiles = files;
-  state.documents = [];
-
-  if (!files.length) {
-    els.sourceFileInfo.textContent = "No source documents uploaded yet.";
-    setStatus("Source documents removed.");
-    return;
-  }
-
-  els.sourceFileInfo.innerHTML = files
-    .map((file, index) => `${index + 1}. ${escapeHtml(file.name)}`)
-    .join("<br>");
-
-  setStatus(`${files.length} source PDF(s) uploaded.`);
-}
-
-/* =========================================================
-   MAIN PROCESS
-   ========================================================= */
-
 async function processDocuments() {
-  if (!state.templateFile) {
-    setStatus("Please upload a sample/template PDF first.", "error");
-    return;
-  }
-
-  if (!state.sourceFiles.length) {
-    setStatus("Please upload at least one source PDF.", "error");
-    return;
-  }
+  if (!state.templateFile) return setStatus("Please upload a template PDF first.", "error");
+  if (!state.sourceFiles.length) return setStatus("Please upload at least one source PDF.", "error");
 
   resetOutputOnly();
 
   try {
-    setStatus("Reading template structure...");
-
-    const templatePdf = await extractPdf(state.templateFile, {
-      collectVisuals: false
-    });
-
-    const templateProfile = buildTemplateProfile(templatePdf);
-    state.templateProfile = templateProfile;
+    setStatus("Reading template...");
+    const templatePdf = await extractPdf(state.templateFile, { collectVisuals: false });
+    state.templateProfile = buildTemplateProfile(templatePdf);
 
     const documents = [];
 
     for (let i = 0; i < state.sourceFiles.length; i++) {
       const file = state.sourceFiles[i];
       setStatus(`Processing ${file.name} (${i + 1} of ${state.sourceFiles.length})...`);
-
-      const sourcePdf = await extractPdf(file, {
-        collectVisuals: true
-      });
-
-      const sourceProfile = buildSourceProfile(sourcePdf);
-      const documentModel = buildDocumentModel({
-        sourcePdf,
-        sourceProfile,
-        templateProfile
-      });
-
-      documents.push(documentModel);
+      const sourcePdf = await extractPdf(file, { collectVisuals: true });
+      documents.push(await buildDocument(sourcePdf, state.templateProfile));
     }
 
     state.documents = documents;
-    state.auditLog = buildAuditLog(templateProfile, documents);
+    state.auditLog = buildAuditLog();
 
-    renderPreview(documents);
-    renderDetectedDetails(templateProfile, documents);
-    renderVisualPreview(documents);
+    renderPreview();
+    renderDetectedDetails();
+    renderImagePreview();
 
     els.exportPdfBtn.disabled = false;
     els.exportAuditBtn.disabled = false;
-
-    setStatus("Processing complete. Review the preview before exporting.", "success");
+    setStatus("Processing complete. Review the preview before export.", "success");
   } catch (error) {
     console.error(error);
     setStatus(`Failed: ${error.message}`, "error");
   }
 }
 
-/* =========================================================
-   PDF EXTRACTION
-   ========================================================= */
-
-async function extractPdf(file, options = {}) {
-  const collectVisuals = options.collectVisuals ?? false;
-
+async function extractPdf(file, { collectVisuals }) {
   const buffer = await file.arrayBuffer();
-  const pdf = await pdfjsLib.getDocument({
-    data: buffer,
-    useSystemFonts: true,
-    disableFontFace: false
-  }).promise;
-
+  const pdf = await pdfjsLib.getDocument({ data: buffer, useSystemFonts: true }).promise;
   const pages = [];
 
   for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber++) {
     setStatus(`Reading ${file.name} - page ${pageNumber} of ${pdf.numPages}`);
-
     const page = await pdf.getPage(pageNumber);
     const viewport = page.getViewport({ scale: 1 });
     const textContent = await page.getTextContent();
 
     const items = textContent.items
-      .map((item) => toTextItem(item))
+      .map((item) => {
+        const tr = item.transform || [1, 0, 0, 1, 0, 0];
+        return {
+          text: item.str || "",
+          x: tr[4] || 0,
+          y: tr[5] || 0,
+          width: item.width || 0,
+          height: Math.abs(tr[3] || item.height || 9),
+          fontName: item.fontName || ""
+        };
+      })
       .filter((item) => item.text.trim());
 
     const lines = buildLines(items, viewport);
-    const pageText = lines.map((line) => line.text).join("\n");
-
-    let renderedPage = null;
-    let visualCandidates = [];
+    let rendered = null;
+    let visuals = [];
 
     if (collectVisuals) {
-      renderedPage = await renderPageToDataUrl(page, CONFIG.extraction.renderScale);
-      visualCandidates = detectVisualCandidates({
-        pageNumber,
-        viewport,
-        lines,
-        renderedPage
-      });
+      rendered = await renderPage(page, CONFIG.extraction.renderScale);
+      visuals = findVisualAreas({ pageNumber, viewport, lines, rendered });
     }
 
     pages.push({
       pageNumber,
       width: viewport.width,
       height: viewport.height,
-      items,
       lines,
-      text: cleanExtractedText(pageText),
-      renderedPage,
-      visualCandidates
+      text: cleanOutputText(lines.map((line) => line.text).join("\n")),
+      rendered,
+      visuals
     });
   }
 
-  const fullText = cleanExtractedText(
-    pages
-      .map((page) => page.text)
-      .filter(Boolean)
-      .join("\n\n")
-  );
-
   return {
     fileName: file.name,
-    pageCount: pdf.numPages,
+    pageCount: pages.length,
     pages,
-    fullText
-  };
-}
-
-function toTextItem(item) {
-  const tx = item.transform || [1, 0, 0, 1, 0, 0];
-  const x = tx[4] || 0;
-  const y = tx[5] || 0;
-  const height = Math.abs(tx[3] || item.height || 0) || item.height || 0;
-
-  return {
-    text: item.str || "",
-    x,
-    y,
-    width: item.width || 0,
-    height,
-    fontName: item.fontName || "",
-    dir: item.dir || "ltr"
+    fullText: cleanOutputText(pages.map((page) => page.text).join("\n\n"))
   };
 }
 
 function buildLines(items, viewport) {
-  if (!items.length) return [];
+  const groups = [];
 
-  const sorted = [...items].sort((a, b) => {
-    const yDiff = Math.round(b.y) - Math.round(a.y);
-    if (Math.abs(yDiff) > CONFIG.extraction.lineYTolerance) return yDiff;
-    return a.x - b.x;
-  });
-
-  const lineGroups = [];
-
-  for (const item of sorted) {
-    let target = null;
-
-    for (const group of lineGroups) {
-      if (Math.abs(group.y - item.y) <= CONFIG.extraction.lineYTolerance) {
-        target = group;
-        break;
-      }
+  for (const item of [...items].sort((a, b) => b.y - a.y || a.x - b.x)) {
+    let group = groups.find((g) => Math.abs(g.y - item.y) <= CONFIG.extraction.yTolerance);
+    if (!group) {
+      group = { y: item.y, items: [] };
+      groups.push(group);
     }
-
-    if (!target) {
-      target = { y: item.y, items: [] };
-      lineGroups.push(target);
-    }
-
-    target.items.push(item);
+    group.items.push(item);
   }
 
-  return lineGroups
+  return groups
     .sort((a, b) => b.y - a.y)
     .map((group) => {
-      const lineItems = group.items.sort((a, b) => a.x - b.x);
-      const text = joinLineItems(lineItems);
-      const xMin = Math.min(...lineItems.map((item) => item.x));
-      const xMax = Math.max(...lineItems.map((item) => item.x + item.width));
-      const avgHeight = average(lineItems.map((item) => item.height).filter(Boolean));
-
+      const sorted = group.items.sort((a, b) => a.x - b.x);
+      const text = joinItems(sorted);
+      const minX = Math.min(...sorted.map((i) => i.x));
+      const maxX = Math.max(...sorted.map((i) => i.x + i.width));
+      const height = average(sorted.map((i) => i.height || 9));
       return {
         text: normalizeLine(text),
-        x: xMin,
+        x: minX,
         y: group.y,
-        width: xMax - xMin,
-        height: avgHeight || 9,
-        pageTopY: viewport.height - group.y,
-        fontSize: avgHeight || 9,
-        isBoldish: lineItems.some((item) => /bold|black|heavy/i.test(item.fontName || "")),
-        itemCount: lineItems.length
+        width: maxX - minX,
+        height,
+        top: viewport.height - group.y - height,
+        bottom: viewport.height - group.y + 3,
+        fontSize: height,
+        boldish: sorted.some((i) => /bold|black|heavy/i.test(i.fontName))
       };
     })
     .filter((line) => line.text);
 }
 
-function joinLineItems(items) {
-  let result = "";
-  let previous = null;
-
+function joinItems(items) {
+  let out = "";
+  let prev = null;
   for (const item of items) {
-    if (!previous) {
-      result += item.text;
-      previous = item;
-      continue;
+    if (prev) {
+      const gap = item.x - (prev.x + prev.width);
+      if (gap > Math.max(2.5, prev.height * 0.55)) out += " ";
     }
-
-    const gap = item.x - (previous.x + previous.width);
-    const spaceThreshold = Math.max(2.2, previous.height * CONFIG.extraction.wordGapMultiplier);
-
-    if (gap > spaceThreshold && !result.endsWith(" ")) result += " ";
-    result += item.text;
-    previous = item;
+    out += item.text;
+    prev = item;
   }
-
-  return result.replace(/\s+/g, " ").trim();
+  return out.replace(/\s+/g, " ").trim();
 }
 
-async function renderPageToDataUrl(page, scale) {
+async function renderPage(page, scale) {
   const viewport = page.getViewport({ scale });
   const canvas = document.createElement("canvas");
-  const context = canvas.getContext("2d", { alpha: false });
-
+  const ctx = canvas.getContext("2d", { alpha: false });
   canvas.width = Math.ceil(viewport.width);
   canvas.height = Math.ceil(viewport.height);
-
-  await page.render({ canvasContext: context, viewport }).promise;
-
-  return {
-    dataUrl: canvas.toDataURL("image/png", 0.95),
-    width: canvas.width,
-    height: canvas.height,
-    scale
-  };
+  await page.render({ canvasContext: ctx, viewport }).promise;
+  return { dataUrl: canvas.toDataURL("image/png", 0.95), width: canvas.width, height: canvas.height, scale };
 }
 
-function detectVisualCandidates({ pageNumber, viewport, lines, renderedPage }) {
-  if (!renderedPage) return [];
+function findVisualAreas({ pageNumber, viewport, lines, rendered }) {
+  if (!rendered) return [];
 
-  const bodyLines = lines.filter((line) => {
-    const top = viewport.height - line.y;
-    return top > 70 && top < viewport.height - 55;
-  });
+  const bodyTop = 72;
+  const bodyBottom = viewport.height - 58;
+  const visualCue = /(visual reference|figure|fig\.?|image|photo|map|diagram|layout|anchorage|berth plan|terminal plan|chart)/i;
 
-  const textCoverage = bodyLines.reduce((sum, line) => {
-    return sum + Math.max(0, line.width * Math.max(line.height, 8));
-  }, 0);
+  const cueLine = lines.find((line) => visualCue.test(line.text));
+  const bodyLines = lines.filter((line) => line.top >= bodyTop && line.bottom <= bodyBottom);
 
-  const pageArea = viewport.width * viewport.height;
-  const textCoverageRatio = textCoverage / pageArea;
+  const textArea = bodyLines.reduce((sum, line) => sum + line.width * Math.max(line.height, 8), 0);
+  const sparsePage = textArea / (viewport.width * viewport.height) < 0.12;
+  const hasCue = Boolean(cueLine);
 
-  const hasSparseText = textCoverageRatio < 0.12;
-  const hasLikelyFigureKeywords = lines.some((line) =>
-    /diagram|image|photo|figure|map|berth|terminal|layout|plan|chart|table/i.test(line.text)
-  );
+  if (!hasCue && !sparsePage) return [];
 
-  if (!hasSparseText && !hasLikelyFigureKeywords) return [];
+  let cropTop = hasCue ? Math.min(cueLine.bottom + 8, viewport.height - 160) : bodyTop;
+  let cropBottom = bodyBottom;
+
+  const laterText = bodyLines.filter((line) => line.top > cropTop + 40 && !visualCue.test(line.text));
+  const denseLaterText = laterText.filter((line) => line.text.length > 25 && line.width > viewport.width * 0.45);
+
+  if (denseLaterText.length) {
+    const firstDense = denseLaterText[0];
+    if (firstDense.top - cropTop > 120) cropBottom = firstDense.top - 10;
+  }
+
+  const cropHeight = cropBottom - cropTop;
+  if (cropHeight < 90) return [];
 
   const crop = {
     x: 32,
-    y: 70,
+    y: cropTop,
     width: viewport.width - 64,
-    height: viewport.height - 135
-  };
-
-  const scaledCrop = {
-    x: Math.round(crop.x * renderedPage.scale),
-    y: Math.round(crop.y * renderedPage.scale),
-    width: Math.round(crop.width * renderedPage.scale),
-    height: Math.round(crop.height * renderedPage.scale)
+    height: cropHeight
   };
 
   return [
     {
-      id: `visual-${pageNumber}-1`,
       pageNumber,
-      crop,
-      scaledCrop,
-      fullPageDataUrl: renderedPage.dataUrl,
-      renderedWidth: renderedPage.width,
-      renderedHeight: renderedPage.height,
-      confidence: hasLikelyFigureKeywords ? 0.72 : 0.48
+      x: Math.round(crop.x * rendered.scale),
+      y: Math.round(crop.y * rendered.scale),
+      width: Math.round(crop.width * rendered.scale),
+      height: Math.round(crop.height * rendered.scale),
+      sourceDataUrl: rendered.dataUrl,
+      renderedWidth: rendered.width,
+      renderedHeight: rendered.height,
+      confidence: hasCue ? 0.86 : 0.52
     }
   ];
 }
 
-async function cropRenderedVisual(visual) {
+async function cropVisual(visual) {
   return new Promise((resolve) => {
-    const image = new Image();
-    image.onload = () => {
+    const img = new Image();
+    img.onload = () => {
       const canvas = document.createElement("canvas");
       const ctx = canvas.getContext("2d", { alpha: false });
-
-      canvas.width = visual.scaledCrop.width;
-      canvas.height = visual.scaledCrop.height;
-
-      ctx.drawImage(
-        image,
-        visual.scaledCrop.x,
-        visual.scaledCrop.y,
-        visual.scaledCrop.width,
-        visual.scaledCrop.height,
-        0,
-        0,
-        canvas.width,
-        canvas.height
-      );
-
-      resolve({
-        ...visual,
-        imageDataUrl: canvas.toDataURL("image/png", 0.95),
-        imageWidth: canvas.width,
-        imageHeight: canvas.height
-      });
+      canvas.width = visual.width;
+      canvas.height = visual.height;
+      ctx.drawImage(img, visual.x, visual.y, visual.width, visual.height, 0, 0, canvas.width, canvas.height);
+      resolve({ dataUrl: canvas.toDataURL("image/png", 0.95), width: canvas.width, height: canvas.height, pageNumber: visual.pageNumber });
     };
-    image.onerror = () => resolve(null);
-    image.src = visual.fullPageDataUrl;
+    img.onerror = () => resolve(null);
+    img.src = visual.sourceDataUrl;
   });
 }
 
-/* =========================================================
-   TEMPLATE PROFILE
-   ========================================================= */
-
-function buildTemplateProfile(templatePdf) {
-  const title = inferDocumentTitle(templatePdf.fullText, templatePdf.fileName);
-  const headings = detectStructuredHeadings(templatePdf.pages, title);
-
-  let sections = headings
-    .map((heading, index) => ({
-      id: `template-section-${index + 1}`,
-      order: index + 1,
-      heading: cleanHeading(heading.text),
-      sourcePageNumber: heading.pageNumber,
-      confidence: heading.confidence
-    }))
-    .filter((section) => section.heading)
-    .filter((section) => !isBlockedText(section.heading))
-    .filter((section) => !isDuplicateTitle(section.heading, title));
-
-  sections = dedupeSections(sections).slice(0, CONFIG.structure.maxTemplateSections);
-
-  if (!sections.length) {
-    sections = CONFIG.structure.fallbackSections.map((heading, index) => ({
-      id: `template-section-${index + 1}`,
-      order: index + 1,
-      heading,
-      sourcePageNumber: 1,
-      confidence: 0.2
-    }));
-  }
-
+function buildTemplateProfile(pdf) {
+  const headings = detectHeadings(pdf);
+  const sections = headings.length ? headings : STANDARD_SECTIONS;
   return {
-    fileName: templatePdf.fileName,
-    pageCount: templatePdf.pageCount,
-    title,
-    sections
+    fileName: pdf.fileName,
+    pageCount: pdf.pageCount,
+    sections: uniqueStrings(sections.map(cleanHeading)).filter(Boolean)
   };
 }
 
-function detectStructuredHeadings(pages, title) {
-  const allLines = pages.flatMap((page) =>
-    page.lines.map((line) => ({ ...line, pageNumber: page.pageNumber }))
-  );
+async function buildDocument(sourcePdf, templateProfile) {
+  const title = inferTitle(sourcePdf);
+  const sourceSections = splitIntoSections(sourcePdf);
+  const headerFacts = buildHeaderFacts(sourcePdf, title);
+  const sections = mapSections(sourceSections, templateProfile.sections);
+  const visuals = await collectVisuals(sourcePdf);
 
-  const fontSizes = allLines.map((line) => line.fontSize).filter(Boolean);
-  const medianFont = median(fontSizes) || 9;
-
-  const candidates = [];
-
-  for (const line of allLines) {
-    const text = normalizeLine(line.text);
-    if (!text) continue;
-    if (text.length < CONFIG.structure.minHeadingLength) continue;
-    if (text.length > CONFIG.structure.maxHeadingLength) continue;
-    if (isBlockedText(text)) continue;
-    if (isDuplicateTitle(text, title)) continue;
-    if (looksLikeBodySentence(text)) continue;
-
-    const patternScore = headingPatternScore(text);
-    const fontScore = line.fontSize >= medianFont + 1.2 ? 0.3 : 0;
-    const boldScore = line.isBoldish ? 0.18 : 0;
-    const shortScore = text.split(/\s+/).length <= 8 ? 0.1 : 0;
-    const score = patternScore + fontScore + boldScore + shortScore;
-
-    if (score >= 0.35) {
-      candidates.push({
-        text,
-        pageNumber: line.pageNumber,
-        confidence: Number(Math.min(score, 0.95).toFixed(2))
-      });
-    }
-  }
-
-  return dedupeHeadingCandidates(candidates);
-}
-
-function headingPatternScore(text) {
-  const clean = normalizeLine(text);
-  const words = clean.split(/\s+/);
-
-  if (/^\d{1,2}(\.\d{1,2})?\s*[).:-]?\s+\S+/.test(clean)) return 0.55;
-  if (/^[A-Z]\.?\s+\S+/.test(clean)) return 0.42;
-  if (/^(section|chapter|part|appendix|article)\s+[a-z0-9]/i.test(clean)) return 0.55;
-  if (/^[A-Z0-9][A-Z0-9\s/&(),.'’-]{3,}$/.test(clean) && words.length <= 10) return 0.45;
-
-  const titleCaseWords = words.filter((word) => /^[A-Z][a-zA-Z0-9/&()'’-]*$/.test(word));
-  if (words.length >= 2 && words.length <= 9 && titleCaseWords.length / words.length >= 0.65) {
-    return 0.36;
-  }
-
-  if (/^(port|vessel|cargo|berth|terminal|arrival|departure|agent|agency|restriction|requirement|contact|draft|loa|beam|dwt|anchorage|pilot|tug|weather|document)s?\b/i.test(clean)) {
-    return 0.38;
-  }
-
-  return 0;
-}
-
-function dedupeHeadingCandidates(candidates) {
-  const seen = new Set();
-  const result = [];
-
-  for (const candidate of candidates) {
-    const cleaned = cleanHeading(candidate.text);
-    const key = comparable(cleaned);
-    if (!key || seen.has(key)) continue;
-    seen.add(key);
-    result.push({ ...candidate, text: cleaned });
-  }
-
-  return result;
-}
-
-function dedupeSections(sections) {
-  const seen = new Set();
-  const result = [];
-
-  for (const section of sections) {
-    const key = comparable(section.heading);
-    if (!key || seen.has(key)) continue;
-    seen.add(key);
-    result.push(section);
-  }
-
-  return result.map((section, index) => ({ ...section, order: index + 1 }));
-}
-
-/* =========================================================
-   SOURCE PROFILE
-   ========================================================= */
-
-function buildSourceProfile(sourcePdf) {
-  const title = inferDocumentTitle(sourcePdf.fullText, sourcePdf.fileName);
-  const sections = splitSourceIntoSections(sourcePdf, title);
-  const keyValueFacts = extractKeyValueFacts(sourcePdf.fullText);
-
-  return {
-    title,
-    sections,
-    keyValueFacts
+  const visualSection = {
+    heading: "Visual References",
+    blocks: visuals.map((visual, index) => ({ type: "image", ...visual, label: `Visual Reference ${index + 1}` }))
   };
-}
-
-function splitSourceIntoSections(sourcePdf, title) {
-  const detectedHeadings = detectStructuredHeadings(sourcePdf.pages, title);
-  const headingByPageAndText = new Map();
-
-  detectedHeadings.forEach((heading) => {
-    headingByPageAndText.set(`${heading.pageNumber}|${comparable(heading.text)}`, heading);
-  });
-
-  const sections = [];
-  let current = makeSection("General Details", 1);
-
-  for (const page of sourcePdf.pages) {
-    for (const line of page.lines) {
-      const text = normalizeLine(line.text);
-      if (!text || isBlockedText(text)) continue;
-
-      const key = `${page.pageNumber}|${comparable(cleanHeading(text))}`;
-      const isHeading = headingByPageAndText.has(key);
-
-      if (isHeading && current.lines.length) {
-        pushSection(current);
-        current = makeSection(cleanHeading(text), page.pageNumber);
-      } else if (isHeading && !current.lines.length && current.heading === "General Details") {
-        current.heading = cleanHeading(text);
-        current.pageNumber = page.pageNumber;
-        current.pageNumbers = new Set([page.pageNumber]);
-      } else {
-        current.lines.push(text);
-        current.pageNumbers.add(page.pageNumber);
-      }
-    }
-  }
-
-  pushSection(current);
-
-  const merged = mergeWeakSections(sections);
-
-  if (!merged.length && sourcePdf.fullText) {
-    merged.push({
-      id: "source-section-1",
-      heading: "Main Details",
-      content: cleanBusinessContent(sourcePdf.fullText),
-      pageNumber: 1,
-      pageNumbers: [1],
-      tokens: tokenize(sourcePdf.fullText)
-    });
-  }
-
-  return merged.map((section, index) => ({
-    ...section,
-    id: `source-section-${index + 1}`
-  }));
-
-  function makeSection(heading, pageNumber) {
-    return {
-      heading,
-      pageNumber,
-      pageNumbers: new Set([pageNumber]),
-      lines: []
-    };
-  }
-
-  function pushSection(section) {
-    const content = cleanBusinessContent(section.lines.join("\n"));
-    const heading = cleanHeading(section.heading || "General Details");
-
-    if (!content && heading === "General Details") return;
-    if (isBlockedText(heading)) return;
-
-    sections.push({
-      id: "",
-      heading: heading || "General Details",
-      content,
-      pageNumber: section.pageNumber,
-      pageNumbers: Array.from(section.pageNumbers).sort((a, b) => a - b),
-      tokens: tokenize(`${heading}\n${content}`)
-    });
-  }
-}
-
-function mergeWeakSections(sections) {
-  const result = [];
-
-  for (const section of sections) {
-    const content = cleanBusinessContent(section.content);
-    const heading = cleanHeading(section.heading);
-
-    if (!content && !heading) continue;
-
-    const isTiny = content.length < 90 && heading !== "General Details";
-    const shouldMerge = isTiny && result.length && !/^\d{1,2}(\.\d{1,2})?\s+/.test(heading);
-
-    if (shouldMerge) {
-      const previous = result[result.length - 1];
-      previous.content = cleanBusinessContent(`${previous.content}\n\n${heading}\n${content}`);
-      previous.pageNumbers = uniqueNumbers([...previous.pageNumbers, ...section.pageNumbers]);
-      previous.tokens = tokenize(`${previous.heading}\n${previous.content}`);
-    } else {
-      result.push({
-        ...section,
-        heading,
-        content,
-        tokens: tokenize(`${heading}\n${content}`)
-      });
-    }
-  }
-
-  return result;
-}
-
-function extractKeyValueFacts(text) {
-  const facts = [];
-  const lines = cleanExtractedText(text).split("\n").map(normalizeLine).filter(Boolean);
-
-  for (const line of lines) {
-    if (isBlockedText(line)) continue;
-
-    const match = line.match(/^(.{2,55}?)(?:\s*[:\-–—]\s+|\s{2,})(.{2,180})$/);
-    if (!match) continue;
-
-    const key = cleanHeading(match[1]);
-    const value = normalizeLine(match[2]);
-
-    if (!key || !value) continue;
-    if (looksLikeBodySentence(key)) continue;
-
-    facts.push({ key, value, tokens: tokenize(`${key} ${value}`) });
-  }
-
-  return facts;
-}
-
-/* =========================================================
-   DOCUMENT MODEL
-   ========================================================= */
-
-function buildDocumentModel({ sourcePdf, sourceProfile, templateProfile }) {
-  const mappedSections = templateProfile.sections.map((templateSection) => ({
-    id: templateSection.id,
-    order: templateSection.order,
-    heading: templateSection.heading,
-    blocks: [],
-    matchedSourceIds: [],
-    score: 0,
-    pageNumbers: []
-  }));
-
-  const usedSourceIds = new Set();
-
-  for (const sourceSection of sourceProfile.sections) {
-    if (!sourceSection.content && !sourceSection.heading) continue;
-
-    const best = findBestTemplateSection(sourceSection, mappedSections);
-
-    if (best.index >= 0 && best.score >= CONFIG.mapping.minScore) {
-      const target = mappedSections[best.index];
-      const blockText = buildSectionBlockText(sourceSection, target.heading);
-
-      if (blockText) {
-        target.blocks.push({
-          type: "text",
-          text: blockText,
-          sourceHeading: sourceSection.heading,
-          pageNumbers: sourceSection.pageNumbers
-        });
-        target.matchedSourceIds.push(sourceSection.id);
-        target.score = Math.max(target.score, best.score);
-        target.pageNumbers = uniqueNumbers([...target.pageNumbers, ...sourceSection.pageNumbers]);
-        usedSourceIds.add(sourceSection.id);
-      }
-    }
-  }
-
-  if (CONFIG.mapping.keepUnmappedContent) {
-    const unmapped = sourceProfile.sections.filter((section) => !usedSourceIds.has(section.id));
-    const additional = cleanAdditionalSections(unmapped);
-
-    if (additional.length) {
-      const additionalTarget = findOrCreateAdditionalSection(mappedSections);
-      for (const section of additional) {
-        const blockText = buildSectionBlockText(section, additionalTarget.heading);
-        if (!blockText) continue;
-
-        additionalTarget.blocks.push({
-          type: "text",
-          text: blockText,
-          sourceHeading: section.heading,
-          pageNumbers: section.pageNumbers
-        });
-        additionalTarget.pageNumbers = uniqueNumbers([...additionalTarget.pageNumbers, ...section.pageNumbers]);
-      }
-    }
-  }
-
-  const finalSections = mappedSections
-    .map((section) => ({
-      ...section,
-      blocks: mergeTextBlocks(section.blocks)
-    }))
-    .filter((section) => section.blocks.some((block) => block.type === "text" && block.text.trim()));
-
-  attachVisualsToSections({
-    sourcePdf,
-    sections: finalSections
-  });
 
   return {
     sourceFileName: sourcePdf.fileName,
-    title: cleanDocumentTitle(sourceProfile.title || inferDocumentTitle(sourcePdf.fullText, sourcePdf.fileName)),
+    title,
     pageCount: sourcePdf.pageCount,
-    sections: finalSections,
-    sourceSectionCount: sourceProfile.sections.length,
-    factsDetected: sourceProfile.keyValueFacts.length
+    headerFacts,
+    sections: [visualSection, ...sections].filter((section) => section.blocks.length),
+    sourceSectionCount: sourceSections.length,
+    visualCount: visuals.length
   };
 }
 
-function findBestTemplateSection(sourceSection, mappedSections) {
-  let bestIndex = -1;
-  let bestScore = 0;
+function detectHeadings(pdf) {
+  const all = pdf.pages.flatMap((p) => p.lines.map((line) => ({ ...line, pageNumber: p.pageNumber })));
+  const medianFont = median(all.map((line) => line.fontSize).filter(Boolean)) || 9;
+  const candidates = [];
 
-  mappedSections.forEach((templateSection, index) => {
-    const score = scoreSectionMatch(templateSection.heading, sourceSection);
-    if (score > bestScore) {
-      bestScore = score;
-      bestIndex = index;
-    }
-  });
+  for (const line of all) {
+    const text = cleanHeading(line.text);
+    if (!text || text.length < 3 || text.length > 110) continue;
+    if (isBlocked(text) || looksLikeSentence(text)) continue;
 
-  return {
-    index: bestIndex,
-    score: Number(bestScore.toFixed(3))
-  };
-}
+    let score = 0;
+    if (/^\d{1,2}(\.\d{1,2})?\s*[).:-]?\s+/.test(line.text)) score += 0.5;
+    if (/^[A-Z0-9][A-Z0-9\s/&(),.'’-]{4,}$/.test(text) && text.split(/\s+/).length <= 10) score += 0.35;
+    if (line.fontSize >= medianFont + 1.2) score += 0.25;
+    if (line.boldish) score += 0.18;
+    if (/\b(port|arrival|anchorage|pilotage|berth|cargo|agent|formalities|regulations|services|charts|remarks|notes|visual)\b/i.test(text)) score += 0.22;
 
-function scoreSectionMatch(templateHeading, sourceSection) {
-  const templateTokens = tokenize(templateHeading);
-  const sourceHeadingTokens = tokenize(sourceSection.heading);
-  const sourceContentTokens = tokenize(sourceSection.content).slice(0, 120);
-  const combinedSourceTokens = uniqueTokens([...sourceHeadingTokens, ...sourceContentTokens]);
-
-  if (!templateTokens.length || !combinedSourceTokens.length) return 0;
-
-  const headingScore = weightedTokenOverlap(templateTokens, sourceHeadingTokens);
-  const contentScore = weightedTokenOverlap(templateTokens, sourceContentTokens);
-  const semanticScore = semanticBoost(templateHeading, `${sourceSection.heading}\n${sourceSection.content}`);
-
-  return Math.min(1, headingScore * 0.55 + contentScore * 0.25 + semanticScore * 0.2);
-}
-
-function semanticBoost(templateHeading, sourceText) {
-  const h = comparable(templateHeading);
-  const s = comparable(sourceText);
-
-  const groups = [
-    { keys: ["arrival", "berthing", "departure", "eta", "etb", "etd", "nor"], labels: ["arrival", "berthing", "departure", "date"] },
-    { keys: ["berth", "terminal", "jetty", "draft", "depth", "loa", "beam"], labels: ["berth", "terminal", "jetty", "draft", "depth"] },
-    { keys: ["vessel", "ship", "imo", "flag", "dwt", "loa", "beam"], labels: ["vessel", "ship", "particular"] },
-    { keys: ["cargo", "operation", "loading", "discharging", "quantity", "mt"], labels: ["cargo", "operation"] },
-    { keys: ["agent", "agency", "contact", "phone", "email", "pic"], labels: ["agent", "agency", "contact"] },
-    { keys: ["restriction", "requirement", "rule", "prohibition", "allowed", "permission"], labels: ["restriction", "requirement"] },
-    { keys: ["port", "country", "location", "anchorage", "pilot", "tug"], labels: ["port", "information", "location"] }
-  ];
-
-  let boost = 0;
-
-  for (const group of groups) {
-    const headingHit = group.labels.some((label) => h.includes(label));
-    const sourceHits = group.keys.filter((key) => s.includes(key)).length;
-    if (headingHit && sourceHits) boost = Math.max(boost, Math.min(0.45, sourceHits * 0.08));
+    if (score >= 0.36) candidates.push(text.replace(/^\d{1,2}(\.\d{1,2})?\s*[).:-]?\s+/, ""));
   }
 
-  return boost;
+  return uniqueStrings(candidates).filter((h) => !isBlocked(h));
 }
 
-function buildSectionBlockText(sourceSection, targetHeading) {
-  const content = cleanBusinessContent(sourceSection.content);
-  const sourceHeading = cleanHeading(sourceSection.heading);
+function splitIntoSections(pdf) {
+  const headings = new Set(detectHeadings(pdf).map(comparable));
+  const sections = [];
+  let current = { heading: "General Details", lines: [], pages: new Set([1]) };
 
-  if (!content && !sourceHeading) return "";
+  for (const page of pdf.pages) {
+    for (const line of page.lines) {
+      const text = normalizeLine(line.text);
+      if (!text || isBlocked(text)) continue;
+      const clean = cleanHeading(text);
+      const isHeading = headings.has(comparable(clean));
 
-  const shouldKeepSourceHeading =
-    sourceHeading &&
-    sourceHeading !== "General Details" &&
-    !isDuplicateTitle(sourceHeading, targetHeading) &&
-    !sameMeaning(sourceHeading, targetHeading) &&
-    !isBlockedText(sourceHeading);
-
-  if (shouldKeepSourceHeading && content) {
-    return cleanBusinessContent(`${sourceHeading}\n${content}`);
-  }
-
-  return content || sourceHeading;
-}
-
-function cleanAdditionalSections(sections) {
-  return sections
-    .map((section) => ({
-      ...section,
-      heading: cleanHeading(section.heading),
-      content: cleanBusinessContent(section.content)
-    }))
-    .filter((section) => section.content || section.heading)
-    .filter((section) => !isBlockedText(section.heading))
-    .filter((section) => !isBlockedText(section.content));
-}
-
-function findOrCreateAdditionalSection(mappedSections) {
-  let section = mappedSections.find((item) => comparable(item.heading) === "additional details");
-
-  if (!section) {
-    section = {
-      id: `template-section-${mappedSections.length + 1}`,
-      order: mappedSections.length + 1,
-      heading: "Additional Details",
-      blocks: [],
-      matchedSourceIds: [],
-      score: 0,
-      pageNumbers: []
-    };
-    mappedSections.push(section);
-  }
-
-  return section;
-}
-
-function mergeTextBlocks(blocks) {
-  const result = [];
-
-  for (const block of blocks) {
-    if (block.type !== "text") {
-      result.push(block);
-      continue;
-    }
-
-    const text = cleanBusinessContent(block.text);
-    if (!text) continue;
-
-    const previous = result[result.length - 1];
-    if (previous && previous.type === "text") {
-      previous.text = cleanBusinessContent(`${previous.text}\n\n${text}`);
-      previous.pageNumbers = uniqueNumbers([...(previous.pageNumbers || []), ...(block.pageNumbers || [])]);
-    } else {
-      result.push({ ...block, text });
+      if (isHeading && current.lines.length) {
+        pushCurrent();
+        current = { heading: clean, lines: [], pages: new Set([page.pageNumber]) };
+      } else if (isHeading && !current.lines.length) {
+        current.heading = clean;
+        current.pages.add(page.pageNumber);
+      } else {
+        current.lines.push(text);
+        current.pages.add(page.pageNumber);
+      }
     }
   }
+  pushCurrent();
 
-  return result;
-}
+  return sections.filter((s) => s.content || s.heading !== "General Details");
 
-async function attachVisualsToSections({ sourcePdf, sections }) {
-  const candidates = sourcePdf.pages.flatMap((page) => page.visualCandidates || []);
-  const limited = candidates
-    .sort((a, b) => b.confidence - a.confidence)
-    .slice(0, CONFIG.extraction.maxVisualsPerDocument);
-
-  for (const visual of limited) {
-    const cropped = await cropRenderedVisual(visual);
-    if (!cropped?.imageDataUrl) continue;
-
-    let target = sections.find((section) => section.pageNumbers.includes(visual.pageNumber));
-    if (!target && sections.length) target = sections[sections.length - 1];
-    if (!target) continue;
-
-    target.blocks.push({
-      type: "image",
-      imageDataUrl: cropped.imageDataUrl,
-      imageWidth: cropped.imageWidth,
-      imageHeight: cropped.imageHeight,
-      pageNumber: visual.pageNumber
+  function pushCurrent() {
+    const content = cleanOutputText(current.lines.join("\n"));
+    if (!content && current.heading === "General Details") return;
+    sections.push({
+      heading: cleanHeading(current.heading),
+      content,
+      pages: Array.from(current.pages).sort((a, b) => a - b)
     });
   }
 }
 
-/* =========================================================
-   PREVIEW / EXPORT
-   ========================================================= */
+function buildHeaderFacts(pdf, title) {
+  const values = {};
+  HEADER_ROWS.flat().forEach((field) => (values[field] = "Not Available"));
 
-function renderPreview(documents) {
-  const text = documents.map(documentToPlainText).join("\n\n");
-  els.formattedPreview.value = text.trim();
+  const titleHints = parseTitleHints(title || pdf.fileName);
+  Object.assign(values, titleHints);
+
+  const keyValues = extractKeyValues(pdf.fullText);
+  for (const item of keyValues) {
+    const field = matchField(item.key);
+    if (field && item.value) values[field] = cleanFact(item.value);
+  }
+
+  const inferred = inferFactsFromBody(pdf.fullText);
+  for (const [field, value] of Object.entries(inferred)) {
+    if (value && isUnavailable(values[field])) values[field] = cleanFact(value);
+  }
+
+  return HEADER_ROWS.map(([left, right]) => ({
+    left: { label: left, value: values[left] || "Not Available" },
+    right: { label: right, value: values[right] || "Not Available" }
+  }));
 }
 
-function documentToPlainText(doc) {
-  const lines = [];
-  lines.push(cleanDocumentTitle(doc.title));
-  lines.push("");
+function parseTitleHints(title) {
+  const text = cleanHeading(removePdfExtension(title).replace(/[_-]+/g, " "));
+  const result = {};
+  const portCountry = text.match(/([A-Z][A-Za-z .']+),\s*([A-Z][A-Za-z .']+)/);
+  const vessel = text.match(/\b([A-Z]{3,20})\b/);
+  if (vessel) result["Vessel Name"] = vessel[1];
+  if (portCountry) {
+    result["Port Name"] = `${portCountry[1]}, ${portCountry[2]}`;
+    result["Country"] = portCountry[2];
+  }
+  return result;
+}
 
-  doc.sections.forEach((section, index) => {
-    const heading = cleanHeading(section.heading);
-    if (!heading || isBlockedText(heading)) return;
+function extractKeyValues(text) {
+  return cleanOutputText(text)
+    .split("\n")
+    .map((line) => line.match(/^(.{2,60}?)(?:\s*[:\-–—]\s+|\s{2,})(.{2,220})$/))
+    .filter(Boolean)
+    .map((m) => ({ key: cleanHeading(m[1]), value: normalizeLine(m[2]) }))
+    .filter((item) => !isBlocked(item.key) && !looksLikeSentence(item.key));
+}
 
-    lines.push(`${index + 1}. ${heading}`);
-    lines.push("");
-
-    for (const block of section.blocks) {
-      if (block.type === "text") {
-        const text = cleanBusinessContent(block.text);
-        if (text) {
-          lines.push(text);
-          lines.push("");
-        }
-      }
-
-      if (block.type === "image") {
-        lines.push("[Image/visual content retained in PDF export]");
-        lines.push("");
-      }
+function matchField(label) {
+  const target = comparable(label);
+  let best = "";
+  let score = 0;
+  for (const [field, aliases] of Object.entries(FIELD_ALIASES)) {
+    const all = [field, ...aliases];
+    const local = Math.max(...all.map((a) => target.includes(comparable(a)) ? 1 : tokenOverlap(tokenize(a), tokenize(target))));
+    if (local > score) {
+      score = local;
+      best = field;
     }
-  });
+  }
+  return score >= 0.42 ? best : "";
+}
 
-  return cleanBusinessContent(lines.join("\n"));
+function inferFactsFromBody(text) {
+  const t = cleanOutputText(text);
+  const facts = {};
+  const checks = [
+    ["UNLOCODE / UNCTAD Code", /\b(?:UNCTAD|UNLOCODE|UN\/LOCODE)\s*(?:code)?\s*[:\-]?\s*([A-Z]{2}\s?[A-Z0-9]{3})/i],
+    ["Latitude / Longitude / Position", /((?:\d{1,2}[°.'’\s]+\d{1,2}(?:\.\d+)?\s*[NS])\s+(?:\d{2,3}[°.'’\s]+\d{1,2}(?:\.\d+)?\s*[EW]))/i],
+    ["Time Zone", /\b(?:UTC|GMT)\s*[+-]?\s*\d{1,2}\b/i],
+    ["Berth / Pier / Terminal", /\b(?:Berth|Terminal|Pier|Jetty)\s*[:\-]?\s*([^\n.]{3,100})/i],
+    ["Cargo", /\bCargo\s*[:\-]?\s*([^\n.]{3,80})/i],
+    ["Cargo Operations / Rate", /\b(?:loading|discharging)\s+rate\s*(?:was|is|:)?\s*([^\n.]{3,90})/i],
+    ["Depth / Draft / Channel", /\b(?:Depth|Draft|Draught|Channel)\s*[:\-]?\s*([^\n.]{2,80})/i],
+    ["Density", /\bDensity\s*[:\-]?\s*([0-9.\-–]+)\b/i],
+    ["Tidal Range", /\bTidal\s+Range\s*[:\-]?\s*([^\n.]{2,60})/i],
+    ["Security Level", /\b(?:Security Level|ISPS\s*-?\s*Level)\s*[:\-]?\s*(\d+)/i],
+    ["VHF / Communication", /\b(?:VHF|channels?)\b[^\n]*(\b(?:CH\s*)?\d{1,2}(?:\s*\/\s*\d{1,2})?\b)/i],
+    ["Agent / Contact", /\bAgent\s*[:\-]?\s*([^\n.]{2,90})/i]
+  ];
+  for (const [field, regex] of checks) {
+    const m = t.match(regex);
+    if (m) facts[field] = m[1] || m[0];
+  }
+  return facts;
+}
+
+function mapSections(sourceSections, templateSections) {
+  const preferred = uniqueStrings([...STANDARD_SECTIONS, ...templateSections]).filter((h) => comparable(h) !== "visual references");
+  const buckets = preferred.map((heading) => ({ heading, blocks: [] }));
+
+  for (const source of sourceSections) {
+    const best = bestSection(source, buckets);
+    const text = cleanOutputText(source.heading === best.heading ? source.content : `${source.heading}\n${source.content}`);
+    if (text) best.blocks.push({ type: "text", text, pages: source.pages });
+  }
+
+  return buckets
+    .map((bucket) => ({ ...bucket, blocks: mergeTextBlocks(bucket.blocks) }))
+    .filter((bucket) => bucket.blocks.length);
+}
+
+function bestSection(source, buckets) {
+  let selected = buckets[buckets.length - 1];
+  let bestScore = 0;
+  for (const bucket of buckets) {
+    const score = sectionScore(bucket.heading, source.heading, source.content);
+    if (score > bestScore) {
+      bestScore = score;
+      selected = bucket;
+    }
+  }
+  return bestScore >= 0.18 ? selected : buckets[buckets.length - 1];
+}
+
+function sectionScore(target, heading, content) {
+  const targetTokens = tokenize(target);
+  const sourceTokens = tokenize(`${heading} ${content}`).slice(0, 140);
+  const base = tokenOverlap(targetTokens, sourceTokens);
+  const semantic = semanticScore(target, `${heading}\n${content}`);
+  return Math.min(1, base * 0.7 + semantic * 0.3);
+}
+
+function semanticScore(target, source) {
+  const t = comparable(target);
+  const s = comparable(source);
+  const groups = [
+    [["arrival", "port stay"], ["arrival", "berthing", "departure", "eta", "etb", "etd", "anchorage"]],
+    [["anchorage"], ["anchorage", "anchor", "pilot station"]],
+    [["pilotage", "navigation", "approach"], ["pilot", "approach", "channel", "towage", "tug", "navigation"]],
+    [["berth", "terminal", "depth"], ["berth", "terminal", "jetty", "depth", "draft", "quay"]],
+    [["cargo"], ["cargo", "loading", "discharging", "shore", "scale"]],
+    [["agent", "contact"], ["agent", "agency", "phone", "email", "contact"]],
+    [["formalities", "documents"], ["document", "certificate", "crew list", "passport", "registry"]],
+    [["regulations", "security", "health"], ["security", "isps", "health", "fine", "authority", "immigration"]],
+    [["services", "supplies", "waste"], ["garbage", "bunker", "fresh water", "sludge", "stores", "provisions"]],
+    [["publication", "charts"], ["chart", "publication", "alrs"]],
+    [["remarks", "experience", "notes"], ["remarks", "general information", "experience", "note"]]
+  ];
+  let best = 0;
+  for (const [labels, keys] of groups) {
+    if (labels.some((x) => t.includes(x))) {
+      best = Math.max(best, Math.min(0.65, keys.filter((k) => s.includes(k)).length * 0.12));
+    }
+  }
+  return best;
+}
+
+async function collectVisuals(pdf) {
+  const raw = pdf.pages.flatMap((page) => page.visuals || []).sort((a, b) => b.confidence - a.confidence);
+  const limited = raw.slice(0, CONFIG.extraction.maxVisualsPerDocument);
+  const result = [];
+  for (const visual of limited) {
+    const cropped = await cropVisual(visual);
+    if (cropped) result.push(cropped);
+  }
+  return result;
+}
+
+function mergeTextBlocks(blocks) {
+  const merged = [];
+  for (const block of blocks) {
+    const text = cleanOutputText(block.text);
+    if (!text) continue;
+    const prev = merged[merged.length - 1];
+    if (prev && prev.type === "text") prev.text = cleanOutputText(`${prev.text}\n\n${text}`);
+    else merged.push({ ...block, text });
+  }
+  return merged;
+}
+
+function renderPreview() {
+  els.formattedPreview.value = state.documents.map((doc) => {
+    const lines = [doc.title, "", "1. Key Information", "", headerFactsToText(doc.headerFacts), ""];
+    doc.sections.forEach((section, i) => {
+      lines.push(`${i + 2}. ${section.heading}`, "");
+      section.blocks.forEach((block) => {
+        if (block.type === "text") lines.push(block.text, "");
+        if (block.type === "image") lines.push(`[${block.label || "Visual Reference"} retained in PDF export]`, "");
+      });
+    });
+    return cleanOutputText(lines.join("\n"));
+  }).join("\n\n");
+}
+
+function headerFactsToText(rows) {
+  return rows.map((row) => `${row.left.label}: ${row.left.value}\n${row.right.label}: ${row.right.value}`).join("\n");
 }
 
 async function exportPdf() {
-  if (!state.documents.length) {
-    setStatus("No processed document available to export.", "error");
-    return;
-  }
+  if (!state.documents.length) return setStatus("No processed document available to export.", "error");
 
   try {
     setStatus("Generating PDF...");
-
     const pdfDoc = await PDFDocument.create();
     const fonts = {
       regular: await pdfDoc.embedFont(StandardFonts.Helvetica),
-      bold: await pdfDoc.embedFont(StandardFonts.HelveticaBold)
+      bold: await pdfDoc.embedFont(StandardFonts.HelveticaBold),
+      italic: await pdfDoc.embedFont(StandardFonts.HelveticaOblique)
     };
 
     for (let i = 0; i < state.documents.length; i++) {
-      if (i > 0) addBlankPageBreak(pdfDoc);
-      await addDocumentToPdf(pdfDoc, state.documents[i], fonts);
+      if (i > 0) pdfDoc.addPage([CONFIG.output.pageWidth, CONFIG.output.pageHeight]);
+      await drawDocument(pdfDoc, state.documents[i], fonts);
     }
 
     const bytes = await pdfDoc.save();
-    const fileName =
-      state.documents.length === 1
-        ? buildOutputFileName(state.documents[0].sourceFileName)
-        : "Updated_Documents.pdf";
-
+    const fileName = state.documents.length === 1 ? outputName(state.documents[0].sourceFileName) : "Updated_Documents.pdf";
     downloadBlob(bytes, fileName, "application/pdf");
     setStatus("PDF exported successfully.", "success");
   } catch (error) {
@@ -1097,365 +687,216 @@ async function exportPdf() {
   }
 }
 
-async function addDocumentToPdf(pdfDoc, doc, fonts) {
-  const pageSize = {
-    width: CONFIG.output.pageWidth,
-    height: CONFIG.output.pageHeight
-  };
-
+async function drawDocument(pdfDoc, doc, fonts) {
+  const pageSize = { width: CONFIG.output.pageWidth, height: CONFIG.output.pageHeight };
   const margin = CONFIG.output.margin;
   const contentWidth = pageSize.width - margin * 2;
-  const title = cleanDocumentTitle(doc.title);
-
   let page = pdfDoc.addPage([pageSize.width, pageSize.height]);
-  let y = drawPageHeader(page, title, fonts, pageSize, margin);
+  let y = drawHeader(page, doc, fonts, pageSize, margin);
 
-  y = drawTitle(page, title, fonts, margin, y);
-
-  for (let s = 0; s < doc.sections.length; s++) {
-    const section = doc.sections[s];
-    const heading = `${s + 1}. ${cleanHeading(section.heading)}`;
-
-    if (isBlockedText(heading)) continue;
-
-    if (y < margin + 95) {
-      drawPageFooter(page, title, fonts, pageSize, margin);
-      page = pdfDoc.addPage([pageSize.width, pageSize.height]);
-      y = drawPageHeader(page, title, fonts, pageSize, margin);
-    }
-
-    y = drawSectionHeading(page, heading, fonts, margin, contentWidth, y);
-
-    for (const block of section.blocks) {
-      if (block.type === "text") {
-        const paragraphs = splitParagraphs(block.text);
-        for (const paragraph of paragraphs) {
-          const lines = wrapTextToWidth(paragraph, fonts.regular, CONFIG.output.bodyFontSize, contentWidth);
-
-          for (const line of lines) {
-            if (y < margin + 48) {
-              drawPageFooter(page, title, fonts, pageSize, margin);
-              page = pdfDoc.addPage([pageSize.width, pageSize.height]);
-              y = drawPageHeader(page, title, fonts, pageSize, margin);
-            }
-
-            page.drawText(sanitizeForPdf(line), {
-              x: margin,
-              y,
-              size: CONFIG.output.bodyFontSize,
-              font: fonts.regular,
-              color: rgb(0.1, 0.12, 0.16)
-            });
-
-            y -= CONFIG.output.lineHeight;
-          }
-
-          y -= CONFIG.output.paragraphGap;
-        }
-      }
-
-      if (block.type === "image" && block.imageDataUrl) {
-        const imageResult = await embedPngFromDataUrl(pdfDoc, block.imageDataUrl);
-        if (!imageResult) continue;
-
-        const { image, width, height } = imageResult;
-        const ratio = Math.min(contentWidth / width, CONFIG.output.figureMaxHeight / height, 1);
-        const drawWidth = width * ratio;
-        const drawHeight = height * ratio;
-
-        if (y - drawHeight < margin + 48) {
-          drawPageFooter(page, title, fonts, pageSize, margin);
-          page = pdfDoc.addPage([pageSize.width, pageSize.height]);
-          y = drawPageHeader(page, title, fonts, pageSize, margin);
-        }
-
-        page.drawImage(image, {
-          x: margin,
-          y: y - drawHeight,
-          width: drawWidth,
-          height: drawHeight
-        });
-
-        y -= drawHeight + 14;
-      }
-    }
-
-    y -= CONFIG.output.sectionGap;
-  }
-
-  drawPageFooter(page, title, fonts, pageSize, margin);
-}
-
-function addBlankPageBreak(pdfDoc) {
-  const pageSize = [CONFIG.output.pageWidth, CONFIG.output.pageHeight];
-  pdfDoc.addPage(pageSize);
-}
-
-function drawPageHeader(page, title, fonts, pageSize, margin) {
-  page.drawText(sanitizeForPdf(title.substring(0, 92)), {
+  page.drawText(safe(doc.title).substring(0, 100), {
     x: margin,
-    y: pageSize.height - 32,
-    size: 10.5,
+    y,
+    size: CONFIG.output.titleSize,
     font: fonts.bold,
     color: rgb(0.13, 0.31, 0.43)
   });
+  y -= 28;
 
-  page.drawLine({
-    start: { x: margin, y: pageSize.height - 42 },
-    end: { x: pageSize.width - margin, y: pageSize.height - 42 },
-    thickness: 0.75,
-    color: rgb(0.55, 0.7, 0.8)
-  });
+  ({ page, y } = ensureSpace(pdfDoc, page, y, 270, doc, fonts, pageSize, margin));
+  y = drawSectionHeading(page, "1. Key Information", fonts, margin, contentWidth, y);
+  y = drawFactsTable(page, doc.headerFacts, fonts, margin, contentWidth, y);
+  y -= 18;
 
+  for (let i = 0; i < doc.sections.length; i++) {
+    const sectionTitle = `${i + 2}. ${doc.sections[i].heading}`;
+    ({ page, y } = ensureSpace(pdfDoc, page, y, 70, doc, fonts, pageSize, margin));
+    y = drawSectionHeading(page, sectionTitle, fonts, margin, contentWidth, y);
+
+    for (const block of doc.sections[i].blocks) {
+      if (block.type === "text") {
+        const paragraphs = block.text.split(/\n+/).map(normalizeLine).filter(Boolean);
+        for (const para of paragraphs) {
+          const lines = wrapToWidth(para, fonts.regular, CONFIG.output.bodySize, contentWidth);
+          for (const line of lines) {
+            ({ page, y } = ensureSpace(pdfDoc, page, y, 45, doc, fonts, pageSize, margin));
+            page.drawText(safe(line), { x: margin, y, size: CONFIG.output.bodySize, font: fonts.regular, color: rgb(0.1, 0.12, 0.16) });
+            y -= CONFIG.output.lineHeight;
+          }
+          y -= 6;
+        }
+      }
+
+      if (block.type === "image" && block.dataUrl) {
+        const img = await embedImage(pdfDoc, block.dataUrl);
+        if (!img) continue;
+        const ratio = Math.min(contentWidth / img.width, CONFIG.output.figureMaxHeight / img.height, 1);
+        const w = img.width * ratio;
+        const h = img.height * ratio;
+        ({ page, y } = ensureSpace(pdfDoc, page, y, h + 42, doc, fonts, pageSize, margin));
+        page.drawText(safe(block.label || "Visual Reference"), { x: margin, y, size: 9.5, font: fonts.bold, color: rgb(0.13, 0.31, 0.43) });
+        y -= 12;
+        page.drawImage(img.image, { x: margin, y: y - h, width: w, height: h });
+        y -= h + 16;
+      }
+    }
+
+    y -= 10;
+  }
+
+  drawFooter(page, doc, fonts, pageSize, margin);
+}
+
+function ensureSpace(pdfDoc, page, y, needed, doc, fonts, pageSize, margin) {
+  if (y - needed > margin + 32) return { page, y };
+  drawFooter(page, doc, fonts, pageSize, margin);
+  const newPage = pdfDoc.addPage([pageSize.width, pageSize.height]);
+  return { page: newPage, y: drawHeader(newPage, doc, fonts, pageSize, margin) };
+}
+
+function drawHeader(page, doc, fonts, pageSize, margin) {
+  page.drawText(safe(doc.title).substring(0, 90), { x: margin, y: pageSize.height - 32, size: 10.5, font: fonts.bold, color: rgb(0.13, 0.31, 0.43) });
+  page.drawLine({ start: { x: margin, y: pageSize.height - 42 }, end: { x: pageSize.width - margin, y: pageSize.height - 42 }, thickness: 0.75, color: rgb(0.55, 0.7, 0.8) });
   return pageSize.height - 64;
 }
 
-function drawTitle(page, title, fonts, margin, y) {
-  page.drawText(sanitizeForPdf(title.substring(0, 95)), {
-    x: margin,
-    y,
-    size: CONFIG.output.titleFontSize,
-    font: fonts.bold,
-    color: rgb(0.13, 0.31, 0.43)
-  });
-
-  return y - 30;
+function drawFooter(page, doc, fonts, pageSize, margin) {
+  page.drawLine({ start: { x: margin, y: 32 }, end: { x: pageSize.width - margin, y: 32 }, thickness: 0.35, color: rgb(0.84, 0.88, 0.92) });
+  page.drawText(safe(doc.title).substring(0, 90), { x: margin, y: 18, size: 7.2, font: fonts.regular, color: rgb(0.45, 0.45, 0.45) });
 }
 
 function drawSectionHeading(page, heading, fonts, margin, contentWidth, y) {
-  page.drawText(sanitizeForPdf(heading.substring(0, 110)), {
-    x: margin,
-    y,
-    size: CONFIG.output.headingFontSize,
-    font: fonts.bold,
-    color: rgb(0.13, 0.31, 0.43)
-  });
-
+  page.drawText(safe(heading).substring(0, 110), { x: margin, y, size: CONFIG.output.headingSize, font: fonts.bold, color: rgb(0.13, 0.31, 0.43) });
   y -= 9;
-
-  page.drawLine({
-    start: { x: margin, y },
-    end: { x: margin + contentWidth, y },
-    thickness: 0.55,
-    color: rgb(0.62, 0.75, 0.83)
-  });
-
+  page.drawLine({ start: { x: margin, y }, end: { x: margin + contentWidth, y }, thickness: 0.55, color: rgb(0.55, 0.7, 0.8) });
   return y - 17;
 }
 
-function drawPageFooter(page, title, fonts, pageSize, margin) {
-  page.drawLine({
-    start: { x: margin, y: 32 },
-    end: { x: pageSize.width - margin, y: 32 },
-    thickness: 0.35,
-    color: rgb(0.84, 0.88, 0.92)
+function drawFactsTable(page, rows, fonts, margin, contentWidth, y) {
+  const labelW = contentWidth * 0.245;
+  const valueW = contentWidth * 0.255;
+  const rowH = CONFIG.output.tableRowHeight;
+
+  rows.forEach((row, index) => {
+    const top = y - index * rowH;
+    page.drawRectangle({ x: margin, y: top - rowH + 4, width: contentWidth, height: rowH, color: index % 2 ? rgb(1, 1, 1) : rgb(0.94, 0.97, 0.985), borderColor: rgb(0.78, 0.86, 0.9), borderWidth: 0.35 });
+    drawCell(page, row.left.label, margin + 5, top - 10, labelW - 8, fonts.bold, 7.8, rgb(0.13, 0.31, 0.43));
+    drawCell(page, row.left.value, margin + labelW + 5, top - 10, valueW - 8, fonts.regular, 7.6, rgb(0.1, 0.12, 0.16));
+    drawCell(page, row.right.label, margin + labelW + valueW + 5, top - 10, labelW - 8, fonts.bold, 7.8, rgb(0.13, 0.31, 0.43));
+    drawCell(page, row.right.value, margin + labelW * 2 + valueW + 5, top - 10, valueW - 8, fonts.regular, 7.6, rgb(0.1, 0.12, 0.16));
+    [labelW, labelW + valueW, labelW * 2 + valueW].forEach((x) => page.drawLine({ start: { x: margin + x, y: top + 4 }, end: { x: margin + x, y: top - rowH + 4 }, thickness: 0.35, color: rgb(0.78, 0.86, 0.9) }));
   });
 
-  page.drawText(sanitizeForPdf(title.substring(0, 92)), {
-    x: margin,
-    y: 18,
-    size: 7.2,
-    font: fonts.regular,
-    color: rgb(0.45, 0.45, 0.45)
+  return y - rows.length * rowH - 8;
+}
+
+function drawCell(page, text, x, y, width, font, size, color) {
+  wrapToWidth(String(text || "Not Available"), font, size, width).slice(0, 2).forEach((line, idx) => {
+    page.drawText(safe(line).substring(0, 80), { x, y: y - idx * 8.5, size, font, color });
   });
 }
 
-async function embedPngFromDataUrl(pdfDoc, dataUrl) {
+async function embedImage(pdfDoc, dataUrl) {
   try {
     const base64 = dataUrl.split(",")[1];
-    const binary = atob(base64);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    const bin = atob(base64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
     const image = await pdfDoc.embedPng(bytes);
     return { image, width: image.width, height: image.height };
-  } catch (error) {
-    console.warn("Image embed skipped:", error);
+  } catch {
     return null;
   }
 }
 
-/* =========================================================
-   UI RENDERING
-   ========================================================= */
-
-function renderDetectedDetails(templateProfile, documents) {
+function renderDetectedDetails() {
   const lines = [];
-
-  lines.push(`Template: ${templateProfile.fileName}`);
-  lines.push(`Template Pages: ${templateProfile.pageCount}`);
-  lines.push(`Detected Template Sections: ${templateProfile.sections.length}`);
+  lines.push(`Template: ${state.templateProfile.fileName}`);
+  lines.push(`Template Sections Detected: ${state.templateProfile.sections.length}`);
   lines.push("");
-
-  templateProfile.sections.forEach((section) => {
-    lines.push(`${section.order}. ${section.heading}`);
-  });
-
-  lines.push("");
-  lines.push("-----------------------------");
-  lines.push("");
-
-  documents.forEach((doc, index) => {
-    const imageCount = doc.sections.flatMap((section) => section.blocks).filter((block) => block.type === "image").length;
-
-    lines.push(`Document ${index + 1}: ${doc.sourceFileName}`);
+  state.templateProfile.sections.forEach((s, i) => lines.push(`${i + 1}. ${s}`));
+  lines.push("", "-----------------------------", "");
+  state.documents.forEach((doc, i) => {
+    lines.push(`Document ${i + 1}: ${doc.sourceFileName}`);
     lines.push(`Title: ${doc.title}`);
     lines.push(`Pages: ${doc.pageCount}`);
-    lines.push(`Detected Source Sections: ${doc.sourceSectionCount}`);
-    lines.push(`Final Output Sections: ${doc.sections.length}`);
-    lines.push(`Mapped Visuals: ${imageCount}`);
+    lines.push(`Source Sections: ${doc.sourceSectionCount}`);
+    lines.push(`Visuals Mapped: ${doc.visualCount}`);
     lines.push("");
   });
-
   els.detectedDetails.textContent = lines.join("\n");
 }
 
-function renderVisualPreview(documents) {
+function renderImagePreview() {
   if (!els.snapshotList) return;
-
   els.snapshotList.innerHTML = "";
-
-  documents.forEach((doc, docIndex) => {
-    doc.sections.forEach((section) => {
-      section.blocks
-        .filter((block) => block.type === "image")
-        .forEach((block) => {
-          const card = document.createElement("div");
-          card.className = "snapshot-card";
-
-          const img = document.createElement("img");
-          img.src = block.imageDataUrl;
-          img.alt = `${doc.sourceFileName} visual content`;
-
-          const label = document.createElement("p");
-          label.textContent = `Document ${docIndex + 1} | ${section.heading}`;
-
-          card.appendChild(img);
-          card.appendChild(label);
-          els.snapshotList.appendChild(card);
-        });
+  state.documents.forEach((doc, docIndex) => {
+    doc.sections.flatMap((s) => s.blocks).filter((b) => b.type === "image").forEach((img) => {
+      const card = document.createElement("div");
+      card.className = "snapshot-card";
+      const image = document.createElement("img");
+      image.src = img.dataUrl;
+      image.alt = img.label || "Visual Reference";
+      const label = document.createElement("p");
+      label.textContent = `Document ${docIndex + 1} | ${img.label || "Visual Reference"}`;
+      card.appendChild(image);
+      card.appendChild(label);
+      els.snapshotList.appendChild(card);
     });
   });
 }
 
-/* =========================================================
-   AUDIT LOG
-   ========================================================= */
-
-function buildAuditLog(templateProfile, documents) {
+function buildAuditLog() {
   return {
     generatedAt: new Date().toISOString(),
-    template: {
-      fileName: templateProfile.fileName,
-      pageCount: templateProfile.pageCount,
-      title: templateProfile.title,
-      sections: templateProfile.sections.map((section) => ({
-        order: section.order,
-        heading: section.heading,
-        confidence: section.confidence
-      }))
-    },
-    documents: documents.map((doc) => ({
-      fileName: doc.sourceFileName,
+    template: state.templateProfile,
+    documents: state.documents.map((doc) => ({
+      sourceFileName: doc.sourceFileName,
       title: doc.title,
       pageCount: doc.pageCount,
       sourceSectionCount: doc.sourceSectionCount,
-      outputSections: doc.sections.map((section) => ({
-        order: section.order,
-        heading: section.heading,
-        score: section.score,
-        pageNumbers: section.pageNumbers,
-        textBlocks: section.blocks.filter((block) => block.type === "text").length,
-        imageBlocks: section.blocks.filter((block) => block.type === "image").length
-      }))
+      visualCount: doc.visualCount,
+      outputSections: doc.sections.map((s) => ({ heading: s.heading, blocks: s.blocks.length }))
     }))
   };
 }
 
 function exportAuditLog() {
-  if (!state.auditLog) {
-    setStatus("No audit log available.", "error");
-    return;
-  }
-
-  const blob = new Blob([JSON.stringify(state.auditLog, null, 2)], {
-    type: "application/json"
-  });
-
-  downloadBlob(blob, "Document_Audit_Log.json", "application/json");
+  if (!state.auditLog) return setStatus("No audit log available.", "error");
+  downloadBlob(JSON.stringify(state.auditLog, null, 2), "Document_Audit_Log.json", "application/json");
   setStatus("Audit log exported successfully.", "success");
 }
 
-/* =========================================================
-   TEXT CLEANING / TITLE LOGIC
-   ========================================================= */
-
-function inferDocumentTitle(fullText, fileName) {
-  const fileTitle = cleanDocumentTitle(removePdfExtension(fileName).replace(/[_-]+/g, " "));
-
-  const lines = cleanExtractedText(fullText)
-    .split("\n")
-    .map(normalizeLine)
-    .filter(Boolean)
-    .filter((line) => !isBlockedText(line));
-
-  const candidates = lines.slice(0, 30).filter((line) => {
-    if (line.length < 4 || line.length > 130) return false;
-    if (/^page\s+\d+/i.test(line)) return false;
-    if (/^\d{1,2}\.\s+/.test(line)) return false;
-    if (looksLikeBodySentence(line)) return false;
-    return headingPatternScore(line) >= 0.35 || /^[A-Z][A-Za-z0-9 ,/&()'’.-]+$/.test(line);
-  });
-
-  if (candidates.length) return cleanDocumentTitle(candidates[0]);
-  return fileTitle || "Document";
+function inferTitle(pdf) {
+  const lines = pdf.pages[0]?.lines.map((l) => cleanHeading(l.text)).filter(Boolean) || [];
+  const candidate = lines.find((line) => !isBlocked(line) && line.length >= 4 && line.length <= 120 && !looksLikeSentence(line));
+  return cleanDocumentTitle(candidate || removePdfExtension(pdf.fileName).replace(/[_-]+/g, " "));
 }
 
-function cleanExtractedText(text) {
+function cleanOutputText(text) {
   return String(text || "")
     .replace(/\r/g, "")
-    .replace(/[ \t]+/g, " ")
-    .replace(/\u0000/g, "")
-    .split("\n")
-    .map(normalizeLine)
-    .filter((line) => !isBlockedText(line))
-    .join("\n")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-}
-
-function cleanBusinessContent(text) {
-  let value = String(text || "");
-
-  value = value
     .replace(/\bSource Page\s+\d+\b/gi, "")
     .replace(/\bTemplate Used\s*:.*/gi, "")
     .replace(/\bSource File\s*:.*/gi, "")
     .replace(/\bGenerated (On|At)\s*:.*/gi, "")
     .replace(/\bOriginal Source\b/gi, "")
-    .replace(/\bSource Preservation\b/gi, "")
-    .replace(/\bTemplate[- ]Based Standardized Document\b/gi, "")
     .replace(/\bFormatted Document\b/gi, "")
-    .replace(/\bSystem Note\b\s*:.*/gi, "")
-    .replace(/\bAudit Note\b\s*:.*/gi, "");
-
-  value = value
     .split("\n")
     .map(normalizeLine)
     .filter(Boolean)
-    .filter((line) => !isBlockedText(line))
-    .join("\n");
-
-  return value.replace(/\n{3,}/g, "\n\n").trim();
+    .filter((line) => !isBlocked(line))
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
 
 function cleanDocumentTitle(text) {
-  const value = cleanHeading(text)
-    .replace(/\bformatted\s+document\b/gi, "")
-    .replace(/\bupdated\s+document\b/gi, "")
-    .replace(/\btemplate[- ]based\s+standardized\s+document\b/gi, "")
-    .trim();
-
-  return value || "Document";
+  return cleanHeading(text)
+    .replace(/\bstandardized format\b/gi, "")
+    .replace(/\bformatted document\b/gi, "")
+    .replace(/\s+/g, " ")
+    .trim() || "Document";
 }
 
 function cleanHeading(text) {
@@ -1463,112 +904,58 @@ function cleanHeading(text) {
     .replace(/^[-–—•\s]+/, "")
     .replace(/^\d{1,3}(\.\d{1,3})?\s*[).:-]?\s*/, "")
     .replace(/[:\-–—]+$/, "")
-    .replace(/\s+/g, " ")
     .trim();
 }
 
-function isBlockedText(text) {
+function isBlocked(text) {
   const value = comparable(text);
-  if (!value) return false;
-
-  return CONFIG.labelsToRemove.some((blocked) => {
-    const cleanBlocked = comparable(blocked);
-    return value === cleanBlocked || value.includes(cleanBlocked);
-  });
+  return CONFIG.blockedOutputLabels.some((b) => value === comparable(b) || value.includes(comparable(b)));
 }
 
-function looksLikeBodySentence(text) {
-  const value = normalizeLine(text);
-  const words = value.split(/\s+/);
-
-  if (words.length > 14) return true;
-  if (/[.!?]$/.test(value) && words.length > 8) return true;
-  if (/^(the|this|these|those|it|they|we|please|kindly)\b/i.test(value) && words.length > 7) return true;
-
-  return false;
+function looksLikeSentence(text) {
+  const words = normalizeLine(text).split(/\s+/);
+  return words.length > 14 || (/[.!?]$/.test(text) && words.length > 8);
 }
 
-function isDuplicateTitle(heading, title) {
-  const h = comparable(heading);
-  const t = comparable(title);
-  if (!h || !t) return false;
-  return h === t || (h.length > 8 && t.includes(h)) || (t.length > 8 && h.includes(t));
+function cleanFact(value) {
+  const clean = normalizeLine(value).replace(/^[:\-–—|]+/, "").trim();
+  return clean && !isBlocked(clean) ? clean.substring(0, 180) : "Not Available";
 }
 
-function sameMeaning(a, b) {
-  return weightedTokenOverlap(tokenize(a), tokenize(b)) > 0.68;
+function isUnavailable(value) {
+  return !value || comparable(value) === "not available";
 }
-
-/* =========================================================
-   TOKEN SCORING
-   ========================================================= */
 
 function tokenize(text) {
-  const stopWords = new Set([
-    "the", "and", "or", "of", "to", "in", "for", "on", "by", "with", "from", "as", "at",
-    "is", "are", "was", "were", "be", "been", "being", "this", "that", "these", "those",
-    "a", "an", "details", "information", "document", "report", "section", "page", "source",
-    "template", "updated", "formatted", "general", "main"
-  ]);
-
-  return comparable(text)
-    .split(" ")
-    .filter((token) => token.length > 2)
-    .filter((token) => !stopWords.has(token));
+  const stop = new Set(["the", "and", "or", "of", "to", "in", "for", "on", "by", "with", "from", "as", "at", "is", "are", "was", "were", "this", "that", "details", "information", "document", "report", "section", "page", "source", "template"]);
+  return comparable(text).split(" ").filter((x) => x.length > 2 && !stop.has(x));
 }
 
-function uniqueTokens(tokens) {
-  return Array.from(new Set(tokens));
+function tokenOverlap(a, b) {
+  const A = Array.from(new Set(a));
+  const B = new Set(b);
+  if (!A.length || !B.size) return 0;
+  return A.filter((x) => B.has(x)).length / A.length;
 }
 
-function weightedTokenOverlap(tokensA, tokensB) {
-  const a = uniqueTokens(tokensA);
-  const b = uniqueTokens(tokensB);
-  if (!a.length || !b.length) return 0;
-
-  const setB = new Set(b);
-  let hits = 0;
-
-  for (const token of a) {
-    if (setB.has(token)) hits += 1;
-  }
-
-  return hits / Math.max(a.length, 1);
-}
-
-/* =========================================================
-   TEXT WRAPPING
-   ========================================================= */
-
-function splitParagraphs(text) {
-  return cleanBusinessContent(text)
-    .split(/\n{1,}/)
-    .map(normalizeLine)
-    .filter(Boolean);
-}
-
-function wrapTextToWidth(text, font, size, maxWidth) {
-  const words = sanitizeForPdf(text).split(/\s+/).filter(Boolean);
+function wrapToWidth(text, font, size, width) {
+  const words = safe(text).split(/\s+/).filter(Boolean);
   const lines = [];
   let line = "";
-
   for (const word of words) {
-    const candidate = line ? `${line} ${word}` : word;
-    const width = font.widthOfTextAtSize(candidate, size);
-
-    if (width > maxWidth && line) {
+    const next = line ? `${line} ${word}` : word;
+    if (font.widthOfTextAtSize(next, size) > width && line) {
       lines.push(line);
       line = word;
     } else {
-      line = candidate;
+      line = next;
     }
   }
-
   if (line) lines.push(line);
   return lines;
 }
 
-function sanitizeForPdf(text) {
+function safe(text) {
   return String(text || "")
     .replace(/[•]/g, "-")
     .replace(/[–—]/g, "-")
@@ -1577,34 +964,20 @@ function sanitizeForPdf(text) {
     .replace(/[^\x00-\x7F]/g, "");
 }
 
-/* =========================================================
-   DOWNLOAD / RESET / STATUS
-   ========================================================= */
-
-function buildOutputFileName(sourceFileName) {
-  const base = removePdfExtension(sourceFileName)
-    .replace(/[^a-z0-9]+/gi, "_")
-    .replace(/^_+|_+$/g, "")
-    .substring(0, 90);
-
+function outputName(sourceName) {
+  const base = removePdfExtension(sourceName).replace(/[^a-z0-9]+/gi, "_").replace(/^_+|_+$/g, "").substring(0, 90);
   return `${base || "Document"}_Updated.pdf`;
-}
-
-function removePdfExtension(fileName) {
-  return String(fileName || "Document").replace(/\.pdf$/i, "");
 }
 
 function downloadBlob(data, fileName, mimeType) {
   const blob = data instanceof Blob ? data : new Blob([data], { type: mimeType });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
-
   a.href = url;
   a.download = fileName;
   document.body.appendChild(a);
   a.click();
   a.remove();
-
   URL.revokeObjectURL(url);
 }
 
@@ -1614,13 +987,10 @@ function resetTool() {
   state.templateProfile = null;
   state.documents = [];
   state.auditLog = null;
-
   if (els.templatePdfInput) els.templatePdfInput.value = "";
   if (els.sourcePdfInput) els.sourcePdfInput.value = "";
-
   if (els.templateFileInfo) els.templateFileInfo.textContent = "No template uploaded yet.";
   if (els.sourceFileInfo) els.sourceFileInfo.textContent = "No source documents uploaded yet.";
-
   resetOutputOnly();
   setStatus("Tool reset.");
 }
@@ -1631,52 +1001,42 @@ function resetOutputOnly() {
   if (els.snapshotList) els.snapshotList.innerHTML = "";
   if (els.exportPdfBtn) els.exportPdfBtn.disabled = true;
   if (els.exportAuditBtn) els.exportAuditBtn.disabled = true;
-
-  state.documents = [];
-  state.auditLog = null;
 }
 
 function setStatus(message, type = "") {
   if (!els.statusText || !els.statusPanel) return;
-
   els.statusText.textContent = message;
   els.statusPanel.classList.remove("success", "error");
-
   if (type === "success") els.statusPanel.classList.add("success");
   if (type === "error") els.statusPanel.classList.add("error");
 }
 
-/* =========================================================
-   GENERIC HELPERS
-   ========================================================= */
-
 function normalizeLine(text) {
-  return String(text || "")
-    .replace(/\r/g, "")
-    .replace(/[\t ]+/g, " ")
-    .trim();
+  return String(text || "").replace(/\r/g, "").replace(/[\t ]+/g, " ").trim();
 }
 
 function comparable(text) {
-  return String(text || "")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+  return String(text || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").replace(/\s+/g, " ").trim();
 }
 
-function escapeHtml(value) {
-  return String(value || "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
+function removePdfExtension(name) {
+  return String(name || "Document").replace(/\.pdf$/i, "");
+}
+
+function uniqueStrings(values) {
+  const seen = new Set();
+  const result = [];
+  for (const value of values) {
+    const key = comparable(value);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    result.push(value);
+  }
+  return result;
 }
 
 function average(values) {
-  if (!values.length) return 0;
-  return values.reduce((sum, value) => sum + value, 0) / values.length;
+  return values.length ? values.reduce((a, b) => a + b, 0) / values.length : 0;
 }
 
 function median(values) {
@@ -1686,6 +1046,11 @@ function median(values) {
   return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
 }
 
-function uniqueNumbers(values) {
-  return Array.from(new Set(values.filter((value) => Number.isFinite(value)))).sort((a, b) => a - b);
+function escapeHtml(value) {
+  return String(value || "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
 }
