@@ -7,27 +7,24 @@ pdfjsLib.GlobalWorkerOptions.workerSrc =
 const { PDFDocument, StandardFonts, rgb } = window.PDFLib;
 
 /* =========================================================
-   CLEAN TEMPLATE-BASED PDF DOCUMENT BUILDER
+   FIREBASE-CONTROLLED SAMPLE ALIGNMENT PDF FORMATTER v1
    =========================================================
 
-   Purpose:
-   - Use a sample/template PDF only to understand the expected document structure.
-   - Rebuild uploaded source PDFs into a clean, consistent business document.
-   - Keep all useful source text.
-   - Avoid system notes, source-page labels, original-source sections, and unwanted titles.
-   - Keep preview and PDF export based on the same structured output.
-   - Carry visual content/images as best-effort mapped figures using PDF page rendering.
+   What this script does:
+   1. Loads your Firebase template controller.
+   2. Reads the uploaded sample/template PDF.
+   3. Detects header fields and section order from the sample.
+   4. Reads source PDFs.
+   5. Aligns source content into the sample structure.
+   6. Marks missing values as "Not Available" or Firebase fallback value.
+   7. Avoids hardcoded fallback sections.
+   8. Uses Firebase visual rules for conservative image/crop handling.
 
-   Important browser limitation:
-   - Browser-side PDF.js can reliably extract text and render pages.
-   - True embedded-image extraction from arbitrary PDFs is inconsistent across PDFs.
-   - This script therefore uses a safer approach:
-     1. Detect pages that likely contain visual content.
-     2. Render those pages.
-     3. Crop non-header/non-footer visual areas when possible.
-     4. Attach those figures to the closest relevant document section.
+   Required companion files:
+   - firebase.client.js
+   - schema.controller.js
 
-   Required HTML IDs expected by this script:
+   Required HTML IDs:
    - templatePdfInput
    - sourcePdfInput
    - templateFileInfo
@@ -61,39 +58,27 @@ const els = {
 const state = {
   templateFile: null,
   sourceFiles: [],
-  templateProfile: null,
+  templateController: null,
+  templateContract: null,
   documents: [],
-  auditLog: null,
-  templateController: null
+  auditLog: null
 };
 
 const CONFIG = {
   extraction: {
     lineYTolerance: 3.5,
     wordGapMultiplier: 0.55,
-    minVisualAreaRatio: 0.08,
-    maxVisualsPerDocument: 8,
-    renderScale: 1.6
+    renderScale: 1.6,
+    maxVisualsPerDocument: 8
   },
   mapping: {
-    minScore: 0.18,
-    strongScore: 0.38,
-    keepUnmappedContent: true
+    minSectionScore: 0.18,
+    minFieldScore: 0.42
   },
   structure: {
     minHeadingLength: 3,
-    maxHeadingLength: 110,
-    maxTemplateSections: 45,
-    fallbackSections: [
-      "Port Information",
-      "Vessel Details",
-      "Arrival / Berthing / Departure Details",
-      "Berth / Terminal Details",
-      "Cargo / Operations Details",
-      "Restrictions / Requirements",
-      "Agency / Contact Details",
-      "Additional Details"
-    ]
+    maxHeadingLength: 120,
+    maxTemplateSections: 50
   },
   output: {
     pageWidth: 595.28,
@@ -105,7 +90,8 @@ const CONFIG = {
     lineHeight: 12.4,
     paragraphGap: 8,
     sectionGap: 15,
-    figureMaxHeight: 210
+    figureMaxHeight: 210,
+    tableRowHeight: 25
   },
   labelsToRemove: [
     "formatted document",
@@ -126,12 +112,43 @@ const CONFIG = {
   ]
 };
 
+const COMMON_HEADER_LABELS = [
+  "Vessel Name",
+  "Port Name",
+  "Country",
+  "UNLOCODE / UNCTAD Code",
+  "Latitude / Longitude / Position",
+  "Time Zone",
+  "Port Stay / Date",
+  "Berth / Pier / Terminal",
+  "Cargo",
+  "Cargo Operations / Rate",
+  "Depth / Draft / Channel",
+  "Density",
+  "Tidal Range",
+  "Security Level",
+  "VHF / Communication",
+  "Agent / Contact",
+  "Publications / Charts",
+  "Additional Reference",
+  "Client Name",
+  "Quotation Date",
+  "Event Date",
+  "Location",
+  "Package Type",
+  "Total Estimate",
+  "Payment Terms",
+  "Invoice Number",
+  "Invoice Date",
+  "Vendor",
+  "Customer",
+  "Project Name",
+  "Prepared By",
+  "Prepared For"
+];
+
 bindEvents();
 setInitialState();
-
-/* =========================================================
-   EVENTS
-   ========================================================= */
 
 function bindEvents() {
   els.templatePdfInput?.addEventListener("change", handleTemplateUpload);
@@ -145,13 +162,13 @@ function bindEvents() {
 function setInitialState() {
   if (els.exportPdfBtn) els.exportPdfBtn.disabled = true;
   if (els.exportAuditBtn) els.exportAuditBtn.disabled = true;
-  setStatus("Upload a template PDF and one or more source PDFs.");
+  setStatus("Upload a sample/template PDF and one or more source PDFs.");
 }
 
 function handleTemplateUpload(event) {
   const file = event.target.files?.[0] || null;
   state.templateFile = file;
-  state.templateProfile = null;
+  state.templateContract = null;
 
   if (!file) {
     els.templateFileInfo.textContent = "No template uploaded yet.";
@@ -181,9 +198,33 @@ function handleSourceUpload(event) {
   setStatus(`${files.length} source PDF(s) uploaded.`);
 }
 
-/* =========================================================
-   MAIN PROCESS
-   ========================================================= */
+function getController() {
+  return state.templateController || {};
+}
+
+function getDetectionRules() {
+  return getController().detectionRules || {};
+}
+
+function getOutputRules() {
+  return getController().outputRules || {};
+}
+
+function getVisualRules() {
+  return getController().visualRules || {};
+}
+
+function getFallbackValue() {
+  return (
+    getDetectionRules().missingValue ||
+    getController().fallbackValue ||
+    "Not Available"
+  );
+}
+
+function boolRule(value, defaultValue) {
+  return typeof value === "boolean" ? value : defaultValue;
+}
 
 async function processDocuments() {
   if (!state.templateFile) {
@@ -198,21 +239,16 @@ async function processDocuments() {
 
   resetOutputOnly();
 
-try {
-  setStatus("Loading Firebase template controller...");
+  try {
+    setStatus("Loading Firebase template controller...");
+    state.templateController = await loadTemplateController();
+    console.log("Firebase Template Controller:", state.templateController);
 
-  state.templateController = await loadTemplateController();
-
-  console.log("Firebase Template Controller:", state.templateController);
-
-  setStatus("Reading template structure...");
-
-  const templatePdf = await extractPdf(state.templateFile, {
-    collectVisuals: false
-  });
-
-    const templateProfile = buildTemplateProfile(templatePdf);
-    state.templateProfile = templateProfile;
+    setStatus("Reading sample/template structure...");
+    const templatePdf = await extractPdf(state.templateFile, { collectVisuals: false });
+    const templateContract = buildTemplateContract(templatePdf);
+    validateTemplateContract(templateContract);
+    state.templateContract = templateContract;
 
     const documents = [];
 
@@ -220,25 +256,22 @@ try {
       const file = state.sourceFiles[i];
       setStatus(`Processing ${file.name} (${i + 1} of ${state.sourceFiles.length})...`);
 
-      const sourcePdf = await extractPdf(file, {
-        collectVisuals: true
-      });
-
+      const sourcePdf = await extractPdf(file, { collectVisuals: true });
       const sourceProfile = buildSourceProfile(sourcePdf);
-      const documentModel = buildDocumentModel({
+      const documentModel = await buildDocumentModel({
         sourcePdf,
         sourceProfile,
-        templateProfile
+        templateContract
       });
 
       documents.push(documentModel);
     }
 
     state.documents = documents;
-    state.auditLog = buildAuditLog(templateProfile, documents);
+    state.auditLog = buildAuditLog(templateContract, documents);
 
     renderPreview(documents);
-    renderDetectedDetails(templateProfile, documents);
+    renderDetectedDetails(templateContract, documents);
     renderVisualPreview(documents);
 
     els.exportPdfBtn.disabled = false;
@@ -284,7 +317,7 @@ async function extractPdf(file, options = {}) {
     let renderedPage = null;
     let visualCandidates = [];
 
-    if (collectVisuals) {
+    if (collectVisuals && boolRule(getDetectionRules().detectVisuals, true)) {
       renderedPage = await renderPageToDataUrl(page, CONFIG.extraction.renderScale);
       visualCandidates = detectVisualCandidates({
         pageNumber,
@@ -382,6 +415,8 @@ function buildLines(items, viewport) {
         y: group.y,
         width: xMax - xMin,
         height: avgHeight || 9,
+        top: viewport.height - group.y - (avgHeight || 9),
+        bottom: viewport.height - group.y + 3,
         pageTopY: viewport.height - group.y,
         fontSize: avgHeight || 9,
         isBoldish: lineItems.some((item) => /bold|black|heavy/i.test(item.fontName || "")),
@@ -431,8 +466,18 @@ async function renderPageToDataUrl(page, scale) {
   };
 }
 
+/* =========================================================
+   VISUAL DETECTION
+   ========================================================= */
+
 function detectVisualCandidates({ pageNumber, viewport, lines, renderedPage }) {
   if (!renderedPage) return [];
+
+  const visualRules = getVisualRules();
+  const rejectPercent = visualRules.rejectIfTextDensityAbovePercent ?? visualRules.rejectIfTextDensityAbove ?? 18;
+  const rejectRatio = rejectPercent / 100;
+  const rejectTextHeavyCrops = boolRule(visualRules.rejectTextHeavyCrops, true);
+  const minVisualHeight = visualRules.minVisualHeight ?? 95;
 
   const bodyLines = lines.filter((line) => {
     const top = viewport.height - line.y;
@@ -446,18 +491,36 @@ function detectVisualCandidates({ pageNumber, viewport, lines, renderedPage }) {
   const pageArea = viewport.width * viewport.height;
   const textCoverageRatio = textCoverage / pageArea;
 
-  const hasSparseText = textCoverageRatio < 0.12;
+  const hasSparseText = textCoverageRatio < rejectRatio;
   const hasLikelyFigureKeywords = lines.some((line) =>
-    /diagram|image|photo|figure|map|berth|terminal|layout|plan|chart|table/i.test(line.text)
+    /visual reference|diagram|image|photo|figure|map|berth plan|terminal plan|layout|plan|chart/i.test(line.text)
   );
 
+  if (rejectTextHeavyCrops && textCoverageRatio > rejectRatio && !hasLikelyFigureKeywords) return [];
   if (!hasSparseText && !hasLikelyFigureKeywords) return [];
+
+  const cueLine = bodyLines.find((line) =>
+    /visual reference|diagram|image|photo|figure|map|layout|berth plan|terminal plan|chart/i.test(line.text)
+  );
+
+  let cropTop = cueLine ? cueLine.bottom + 6 : 70;
+  let cropBottom = viewport.height - 65;
+
+  const denseTextAfterCue = bodyLines.find(
+    (line) => line.top > cropTop + 80 && line.text.length > 35 && line.width > viewport.width * 0.42
+  );
+
+  if (denseTextAfterCue && denseTextAfterCue.top - cropTop > minVisualHeight) {
+    cropBottom = denseTextAfterCue.top - 8;
+  }
+
+  if (cropBottom - cropTop < minVisualHeight) return [];
 
   const crop = {
     x: 32,
-    y: 70,
+    y: cropTop,
     width: viewport.width - 64,
-    height: viewport.height - 135
+    height: cropBottom - cropTop
   };
 
   const scaledCrop = {
@@ -476,7 +539,8 @@ function detectVisualCandidates({ pageNumber, viewport, lines, renderedPage }) {
       fullPageDataUrl: renderedPage.dataUrl,
       renderedWidth: renderedPage.width,
       renderedHeight: renderedPage.height,
-      confidence: hasLikelyFigureKeywords ? 0.72 : 0.48
+      confidence: hasLikelyFigureKeywords ? 0.78 : 0.48,
+      textCoverageRatio
     }
   ];
 }
@@ -516,10 +580,10 @@ async function cropRenderedVisual(visual) {
 }
 
 /* =========================================================
-   TEMPLATE PROFILE
+   TEMPLATE CONTRACT
    ========================================================= */
 
-function buildTemplateProfile(templatePdf) {
+function buildTemplateContract(templatePdf) {
   const title = inferDocumentTitle(templatePdf.fullText, templatePdf.fileName);
   const headings = detectStructuredHeadings(templatePdf.pages, title);
 
@@ -537,22 +601,127 @@ function buildTemplateProfile(templatePdf) {
 
   sections = dedupeSections(sections).slice(0, CONFIG.structure.maxTemplateSections);
 
-  if (!sections.length) {
-    sections = CONFIG.structure.fallbackSections.map((heading, index) => ({
-      id: `template-section-${index + 1}`,
-      order: index + 1,
-      heading,
-      sourcePageNumber: 1,
-      confidence: 0.2
-    }));
-  }
+  const headerFields = detectTemplateHeaderFields(templatePdf, sections);
 
   return {
     fileName: templatePdf.fileName,
     pageCount: templatePdf.pageCount,
     title,
+    headerFields,
     sections
   };
+}
+
+function validateTemplateContract(contract) {
+  const detectionRules = getDetectionRules();
+  const outputRules = getOutputRules();
+
+  const minimumSections = detectionRules.minimumSections ?? 2;
+  const minimumHeaderFields = detectionRules.minimumHeaderFields ?? 2;
+  const showSummaryTable = boolRule(outputRules.showSummaryTable, true);
+
+  if (contract.sections.length < minimumSections) {
+    throw new Error(
+      `Template is too weak. Detected ${contract.sections.length} section(s), but Firebase requires at least ${minimumSections}. Upload a clearer sample/template PDF.`
+    );
+  }
+
+  if (showSummaryTable && contract.headerFields.length < minimumHeaderFields) {
+    throw new Error(
+      `Template header table is too weak. Detected ${contract.headerFields.length} header field(s), but Firebase requires at least ${minimumHeaderFields}. Upload a sample with a clearer Key Information/header table.`
+    );
+  }
+}
+
+function detectTemplateHeaderFields(templatePdf, sections) {
+  if (!boolRule(getDetectionRules().detectHeaderTable, true)) return [];
+
+  const keyInfoSection = sections.find((section) =>
+    /key information|summary|basic details|main details|header/i.test(section.heading)
+  );
+
+  const maxPage = Math.min(templatePdf.pageCount, keyInfoSection ? keyInfoSection.sourcePageNumber + 1 : 2);
+  const sampleText = templatePdf.pages
+    .filter((page) => page.pageNumber <= maxPage)
+    .map((page) => page.text)
+    .join("\n");
+
+  const found = [];
+  const seen = new Set();
+
+  for (const label of COMMON_HEADER_LABELS) {
+    if (containsLooseLabel(sampleText, label)) {
+      const key = comparable(label).replace(/\s+/g, "_");
+      if (!seen.has(key)) {
+        seen.add(key);
+        found.push({
+          id: `field-${found.length + 1}`,
+          key,
+          label,
+          aliases: buildAliasesForLabel(label),
+          order: found.length + 1
+        });
+      }
+    }
+  }
+
+  const colonLabels = sampleText.match(/^.{2,60}:/gm) || [];
+  for (const item of colonLabels) {
+    const label = cleanHeading(item.replace(/:$/, ""));
+    const key = comparable(label).replace(/\s+/g, "_");
+    if (!label || isBlockedText(label) || looksLikeBodySentence(label) || seen.has(key)) continue;
+
+    seen.add(key);
+    found.push({
+      id: `field-${found.length + 1}`,
+      key,
+      label,
+      aliases: buildAliasesForLabel(label),
+      order: found.length + 1
+    });
+  }
+
+  return found;
+}
+
+function containsLooseLabel(text, label) {
+  const source = comparable(text);
+  const target = comparable(label);
+  if (source.includes(target)) return true;
+  return weightedTokenOverlap(tokenize(label), tokenize(text)) > 0.84;
+}
+
+function buildAliasesForLabel(label) {
+  const lower = comparable(label);
+  const aliases = new Set([label]);
+
+  const groups = [
+    ["vessel", ["vessel", "vessel name", "ship", "mv", "m/v"]],
+    ["port", ["port", "port name", "location", "puerto"]],
+    ["country", ["country"]],
+    ["unlocode", ["unlocode", "unctad", "un/locode", "code"]],
+    ["latitude longitude position", ["lat", "long", "latitude", "longitude", "position"]],
+    ["time zone", ["time zone", "timezone", "gmt", "utc", "local time", "smt"]],
+    ["port stay date", ["date", "date of arrival", "arrival", "eta", "etb", "etd", "port stay"]],
+    ["berth pier terminal", ["berth", "pier", "terminal", "jetty", "berth name"]],
+    ["cargo operations rate", ["loading rate", "discharging rate", "cargo operation", "cargo operations", "rate", "shore scale"]],
+    ["cargo", ["cargo", "commodity"]],
+    ["depth draft channel", ["depth", "draft", "draught", "channel", "fairway", "depth at anchorage"]],
+    ["density", ["density", "water density", "salinity"]],
+    ["tidal range", ["tidal range", "tide", "average tide"]],
+    ["security level", ["security level", "security", "isps", "level"]],
+    ["vhf communication", ["vhf", "vhf channel", "channel", "channels", "communication", "radio"]],
+    ["agent contact", ["agent", "agents", "agency", "contact", "phone", "email", "mobile"]],
+    ["publications charts", ["publication", "publications", "chart", "charts", "enc", "enp", "alrs"]]
+  ];
+
+  for (const [needle, values] of groups) {
+    if (lower.includes(needle) || needle.includes(lower)) {
+      values.forEach((value) => aliases.add(value));
+    }
+  }
+
+  return Array.from(aliases);
 }
 
 function detectStructuredHeadings(pages, title) {
@@ -562,7 +731,6 @@ function detectStructuredHeadings(pages, title) {
 
   const fontSizes = allLines.map((line) => line.fontSize).filter(Boolean);
   const medianFont = median(fontSizes) || 9;
-
   const candidates = [];
 
   for (const line of allLines) {
@@ -602,13 +770,9 @@ function headingPatternScore(text) {
   if (/^[A-Z0-9][A-Z0-9\s/&(),.'’-]{3,}$/.test(clean) && words.length <= 10) return 0.45;
 
   const titleCaseWords = words.filter((word) => /^[A-Z][a-zA-Z0-9/&()'’-]*$/.test(word));
-  if (words.length >= 2 && words.length <= 9 && titleCaseWords.length / words.length >= 0.65) {
-    return 0.36;
-  }
+  if (words.length >= 2 && words.length <= 9 && titleCaseWords.length / words.length >= 0.65) return 0.36;
 
-  if (/^(port|vessel|cargo|berth|terminal|arrival|departure|agent|agency|restriction|requirement|contact|draft|loa|beam|dwt|anchorage|pilot|tug|weather|document)s?\b/i.test(clean)) {
-    return 0.38;
-  }
+  if (/^(port|vessel|cargo|berth|terminal|arrival|departure|agent|agency|restriction|requirement|contact|draft|loa|beam|dwt|anchorage|pilot|tug|weather|document|visual|summary|key)s?\b/i.test(clean)) return 0.38;
 
   return 0;
 }
@@ -643,18 +807,19 @@ function dedupeSections(sections) {
 }
 
 /* =========================================================
-   SOURCE PROFILE
+   SOURCE PROFILE + FACTS
    ========================================================= */
 
 function buildSourceProfile(sourcePdf) {
   const title = inferDocumentTitle(sourcePdf.fullText, sourcePdf.fileName);
   const sections = splitSourceIntoSections(sourcePdf, title);
   const keyValueFacts = extractKeyValueFacts(sourcePdf.fullText);
+  const implicitFacts = inferImplicitFacts(sourcePdf.fullText, sourcePdf.fileName);
 
   return {
     title,
     sections,
-    keyValueFacts
+    keyValueFacts: dedupeFacts([...keyValueFacts, ...implicitFacts])
   };
 }
 
@@ -692,7 +857,6 @@ function splitSourceIntoSections(sourcePdf, title) {
   }
 
   pushSection(current);
-
   const merged = mergeWeakSections(sections);
 
   if (!merged.length && sourcePdf.fullText) {
@@ -706,18 +870,10 @@ function splitSourceIntoSections(sourcePdf, title) {
     });
   }
 
-  return merged.map((section, index) => ({
-    ...section,
-    id: `source-section-${index + 1}`
-  }));
+  return merged.map((section, index) => ({ ...section, id: `source-section-${index + 1}` }));
 
   function makeSection(heading, pageNumber) {
-    return {
-      heading,
-      pageNumber,
-      pageNumbers: new Set([pageNumber]),
-      lines: []
-    };
+    return { heading, pageNumber, pageNumbers: new Set([pageNumber]), lines: [] };
   }
 
   function pushSection(section) {
@@ -756,12 +912,7 @@ function mergeWeakSections(sections) {
       previous.pageNumbers = uniqueNumbers([...previous.pageNumbers, ...section.pageNumbers]);
       previous.tokens = tokenize(`${previous.heading}\n${previous.content}`);
     } else {
-      result.push({
-        ...section,
-        heading,
-        content,
-        tokens: tokenize(`${heading}\n${content}`)
-      });
+      result.push({ ...section, heading, content, tokens: tokenize(`${heading}\n${content}`) });
     }
   }
 
@@ -772,30 +923,111 @@ function extractKeyValueFacts(text) {
   const facts = [];
   const lines = cleanExtractedText(text).split("\n").map(normalizeLine).filter(Boolean);
 
-  for (const line of lines) {
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
     if (isBlockedText(line)) continue;
 
-    const match = line.match(/^(.{2,55}?)(?:\s*[:\-–—]\s+|\s{2,})(.{2,180})$/);
-    if (!match) continue;
+    const match = line.match(/^(.{2,65}?)(?:\s*[:\-–—]\s+|\s{2,})(.{2,220})$/);
+    if (match) {
+      const key = cleanHeading(match[1]);
+      const value = normalizeLine(match[2]);
+      if (key && value && !looksLikeBodySentence(key)) {
+        facts.push({ key, value, evidence: line, tokens: tokenize(`${key} ${value}`), confidence: 0.78 });
+      }
+      continue;
+    }
 
-    const key = cleanHeading(match[1]);
-    const value = normalizeLine(match[2]);
-
-    if (!key || !value) continue;
-    if (looksLikeBodySentence(key)) continue;
-
-    facts.push({ key, value, tokens: tokenize(`${key} ${value}`) });
+    const next = lines[i + 1] || "";
+    if (looksLikeStandaloneLabel(line) && next && !looksLikeStandaloneLabel(next)) {
+      facts.push({
+        key: cleanHeading(line),
+        value: normalizeLine(next),
+        evidence: `${line} ${next}`,
+        tokens: tokenize(`${line} ${next}`),
+        confidence: 0.68
+      });
+    }
   }
 
   return facts;
+}
+
+function looksLikeStandaloneLabel(text) {
+  const clean = cleanHeading(text);
+  if (!clean || clean.length > 65 || looksLikeBodySentence(clean)) return false;
+  return /^(agent|agents|documents|anchorage|berth|cargo|pilot|pilotage|charts|publications|regulations|services|contacts|port|vessel|time zone|date|arrival|location|customer|client|vendor|invoice)$/i.test(clean);
+}
+
+function inferImplicitFacts(fullText, fileName) {
+  const facts = [];
+  const text = cleanExtractedText(fullText);
+  const fileTitle = cleanHeading(removePdfExtension(fileName).replace(/[_-]+/g, " "));
+
+  addFactFromMatch(facts, "Latitude / Longitude / Position", text.match(/\b\d{1,2}(?:\.\d+)?\s*[\/ ,]+\s*-?\d{1,3}(?:\.\d+)?\b|\b\d{1,2}[°.'’\s]+\d{1,2}(?:\.\d+)?\s*[NS]\s+\d{2,3}[°.'’\s]+\d{1,2}(?:\.\d+)?\s*[EW]\b/i));
+  addFactFromMatch(facts, "Time Zone", text.match(/\b(?:GMT|UTC|SMT)\s*[=:+\-\w\s]*-?\d{1,2}\s*(?:hrs|hours|h)?\b/i));
+  addFactFromMatch(facts, "Port Stay / Date", text.match(/\bDate of Arrival\s*[:\-]?\s*([^\n]{2,80})/i), 1);
+  addFactFromMatch(facts, "Cargo", text.match(/\bCargo\s*[:\-]?\s*([^\n]{2,90})/i), 1);
+  addFactFromMatch(facts, "Depth / Draft / Channel", text.match(/\bDepth(?: at Anchorage)?\s*[:\-]?\s*([^\n]{2,60})/i), 1);
+  addFactFromMatch(facts, "VHF / Communication", text.match(/\b(?:VHF(?: CHANNEL)?|PILOT:\s*VHF CHANNEL)\s*[:\-]?\s*(?:CH\s*)?([0-9;,/\s]{2,30})/i), 1, (value) => `CH ${normalizeChannels(value)}`);
+  addFactFromMatch(facts, "Agent / Contact", text.match(/\bAgents?\s*[:\-]?\s*\n?([^\n]{2,100})/i), 1);
+  addFactFromMatch(facts, "Publications / Charts", text.match(/\bENC\s*[:\-]?\s*([^\n]{2,140})/i), 1, (value) => `ENC: ${value}`);
+  addFactFromMatch(facts, "Berth / Pier / Terminal", text.match(/\b(?:Berth Name|Berth|Terminal)\s*[:\-]?\s*\n?([^\n]{2,100})/i), 1);
+
+  const portCountry = text.match(/\b([A-Z][A-Za-z.' ]{2,40}),\s*([A-Z][A-Za-z.' ]{2,40})\b/);
+  if (portCountry) {
+    facts.push(makeFact("Port Name", `${portCountry[1]}, ${portCountry[2]}`, portCountry[0], 0.78));
+    facts.push(makeFact("Country", portCountry[2], portCountry[0], 0.76));
+  }
+
+  const year = fileTitle.match(/\b(20\d{2}|19\d{2})\b/);
+  if (year) facts.push(makeFact("Year", year[1], fileTitle, 0.7));
+
+  return facts;
+}
+
+function addFactFromMatch(facts, key, match, groupIndex = 0, transform = null) {
+  if (!match) return;
+  const raw = match[groupIndex] || match[0];
+  const value = normalizeLine(transform ? transform(raw) : raw);
+  if (!value || isBlockedText(value)) return;
+  facts.push(makeFact(key, value, match[0], 0.82));
+}
+
+function makeFact(key, value, evidence, confidence = 0.75) {
+  return { key, value, evidence, tokens: tokenize(`${key} ${value} ${evidence || ""}`), confidence };
+}
+
+function dedupeFacts(facts) {
+  const seen = new Set();
+  const result = [];
+
+  for (const fact of facts) {
+    const key = comparable(fact.key);
+    const value = comparable(fact.value);
+    if (!key || !value || value === "not available") continue;
+    const sig = `${key}|${value}`;
+    if (seen.has(sig)) continue;
+    seen.add(sig);
+    result.push(fact);
+  }
+
+  return result;
 }
 
 /* =========================================================
    DOCUMENT MODEL
    ========================================================= */
 
-function buildDocumentModel({ sourcePdf, sourceProfile, templateProfile }) {
-  const mappedSections = templateProfile.sections.map((templateSection) => ({
+async function buildDocumentModel({ sourcePdf, sourceProfile, templateContract }) {
+  const outputRules = getOutputRules();
+  const showSummaryTable = boolRule(outputRules.showSummaryTable, true);
+  const sectionNumbering = boolRule(outputRules.sectionNumbering, true);
+
+  const summaryRows = showSummaryTable
+    ? buildSummaryRows(templateContract.headerFields, sourceProfile.keyValueFacts)
+    : [];
+
+  const mappedSections = templateContract.sections.map((templateSection) => ({
     id: templateSection.id,
     order: templateSection.order,
     heading: templateSection.heading,
@@ -812,7 +1044,7 @@ function buildDocumentModel({ sourcePdf, sourceProfile, templateProfile }) {
 
     const best = findBestTemplateSection(sourceSection, mappedSections);
 
-    if (best.index >= 0 && best.score >= CONFIG.mapping.minScore) {
+    if (best.index >= 0 && best.score >= CONFIG.mapping.minSectionScore) {
       const target = mappedSections[best.index];
       const blockText = buildSectionBlockText(sourceSection, target.heading);
 
@@ -831,12 +1063,13 @@ function buildDocumentModel({ sourcePdf, sourceProfile, templateProfile }) {
     }
   }
 
-  if (CONFIG.mapping.keepUnmappedContent) {
-    const unmapped = sourceProfile.sections.filter((section) => !usedSourceIds.has(section.id));
-    const additional = cleanAdditionalSections(unmapped);
+  const unmapped = sourceProfile.sections.filter((section) => !usedSourceIds.has(section.id));
+  const additional = cleanAdditionalSections(unmapped);
 
-    if (additional.length) {
-      const additionalTarget = findOrCreateAdditionalSection(mappedSections);
+  if (additional.length) {
+    const additionalTarget = findFallbackSection(mappedSections);
+
+    if (additionalTarget) {
       for (const section of additional) {
         const blockText = buildSectionBlockText(section, additionalTarget.heading);
         if (!blockText) continue;
@@ -853,25 +1086,97 @@ function buildDocumentModel({ sourcePdf, sourceProfile, templateProfile }) {
   }
 
   const finalSections = mappedSections
-    .map((section) => ({
-      ...section,
-      blocks: mergeTextBlocks(section.blocks)
-    }))
+    .map((section) => ({ ...section, blocks: mergeTextBlocks(section.blocks) }))
     .filter((section) => section.blocks.some((block) => block.type === "text" && block.text.trim()));
 
-  attachVisualsToSections({
-    sourcePdf,
-    sections: finalSections
-  });
+  await attachVisualsToSections({ sourcePdf, sections: finalSections });
 
   return {
     sourceFileName: sourcePdf.fileName,
-    title: cleanDocumentTitle(sourceProfile.title || inferDocumentTitle(sourcePdf.fullText, sourcePdf.fileName)),
+    title: buildOutputTitle(sourcePdf, sourceProfile),
     pageCount: sourcePdf.pageCount,
+    summaryRows,
     sections: finalSections,
+    sectionNumbering,
     sourceSectionCount: sourceProfile.sections.length,
     factsDetected: sourceProfile.keyValueFacts.length
   };
+}
+
+function buildSummaryRows(headerFields, facts) {
+  return headerFields.map((field) => {
+    const match = findBestFieldFact(field, facts);
+    return {
+      key: field.key,
+      label: field.label,
+      value: match ? match.value : getFallbackValue(),
+      confidence: match ? match.confidence : 0,
+      evidence: match ? match.evidence : ""
+    };
+  });
+}
+
+function findBestFieldFact(field, facts) {
+  let best = null;
+  let bestScore = 0;
+
+  const aliases = [field.label, ...(field.aliases || [])];
+
+  for (const fact of facts) {
+    const haystack = comparable(`${fact.key} ${fact.value} ${fact.evidence || ""}`);
+    let score = 0;
+
+    for (const alias of aliases) {
+      const aliasValue = comparable(alias);
+      if (!aliasValue) continue;
+
+      if (haystack.includes(aliasValue)) score = Math.max(score, 0.92);
+      score = Math.max(score, weightedTokenOverlap(tokenize(alias), tokenize(`${fact.key} ${fact.value} ${fact.evidence || ""}`)));
+    }
+
+    score = Math.max(score, semanticFieldScore(field.label, fact));
+
+    if (score > bestScore) {
+      bestScore = score;
+      best = fact;
+    }
+  }
+
+  if (!best || bestScore < CONFIG.mapping.minFieldScore) return null;
+  return { ...best, confidence: Number(bestScore.toFixed(2)) };
+}
+
+function semanticFieldScore(label, fact) {
+  const field = comparable(label);
+  const text = comparable(`${fact.key} ${fact.value} ${fact.evidence || ""}`);
+
+  const checks = [
+    ["vessel", ["vessel", "ship", "m v", "mv"]],
+    ["port", ["port", "puerto", "location"]],
+    ["country", ["country", "colombia", "brazil", "india", "usa", "singapore"]],
+    ["latitude longitude position", ["lat", "long", "position"]],
+    ["time zone", ["gmt", "utc", "time zone", "smt"]],
+    ["port stay date", ["date of arrival", "arrival", "eta", "etb", "etd"]],
+    ["berth pier terminal", ["berth", "terminal", "pier", "jetty"]],
+    ["cargo operations rate", ["loading", "discharging", "rate", "operation"]],
+    ["cargo", ["cargo"]],
+    ["depth draft channel", ["depth", "draft", "draught", "channel"]],
+    ["density", ["density", "salinity"]],
+    ["tidal range", ["tide", "tidal"]],
+    ["security level", ["security", "isps"]],
+    ["vhf communication", ["vhf", "channel", "ch"]],
+    ["agent contact", ["agent", "agents", "agency", "contact", "email", "phone", "mobile"]],
+    ["publications charts", ["chart", "charts", "publication", "enc", "enp"]]
+  ];
+
+  for (const [needle, aliases] of checks) {
+    if (field.includes(needle)) {
+      const hits = aliases.filter((alias) => text.includes(alias)).length;
+      if (hits) return Math.min(0.94, 0.44 + hits * 0.13 + (fact.confidence || 0) * 0.15);
+    }
+  }
+
+  return 0;
 }
 
 function findBestTemplateSection(sourceSection, mappedSections) {
@@ -886,25 +1191,21 @@ function findBestTemplateSection(sourceSection, mappedSections) {
     }
   });
 
-  return {
-    index: bestIndex,
-    score: Number(bestScore.toFixed(3))
-  };
+  return { index: bestIndex, score: Number(bestScore.toFixed(3)) };
 }
 
 function scoreSectionMatch(templateHeading, sourceSection) {
   const templateTokens = tokenize(templateHeading);
   const sourceHeadingTokens = tokenize(sourceSection.heading);
-  const sourceContentTokens = tokenize(sourceSection.content).slice(0, 120);
-  const combinedSourceTokens = uniqueTokens([...sourceHeadingTokens, ...sourceContentTokens]);
+  const sourceContentTokens = tokenize(sourceSection.content).slice(0, 160);
 
-  if (!templateTokens.length || !combinedSourceTokens.length) return 0;
+  if (!templateTokens.length) return 0;
 
   const headingScore = weightedTokenOverlap(templateTokens, sourceHeadingTokens);
   const contentScore = weightedTokenOverlap(templateTokens, sourceContentTokens);
   const semanticScore = semanticBoost(templateHeading, `${sourceSection.heading}\n${sourceSection.content}`);
 
-  return Math.min(1, headingScore * 0.55 + contentScore * 0.25 + semanticScore * 0.2);
+  return Math.min(1, headingScore * 0.5 + contentScore * 0.2 + semanticScore * 0.3);
 }
 
 function semanticBoost(templateHeading, sourceText) {
@@ -912,21 +1213,28 @@ function semanticBoost(templateHeading, sourceText) {
   const s = comparable(sourceText);
 
   const groups = [
-    { keys: ["arrival", "berthing", "departure", "eta", "etb", "etd", "nor"], labels: ["arrival", "berthing", "departure", "date"] },
-    { keys: ["berth", "terminal", "jetty", "draft", "depth", "loa", "beam"], labels: ["berth", "terminal", "jetty", "draft", "depth"] },
-    { keys: ["vessel", "ship", "imo", "flag", "dwt", "loa", "beam"], labels: ["vessel", "ship", "particular"] },
-    { keys: ["cargo", "operation", "loading", "discharging", "quantity", "mt"], labels: ["cargo", "operation"] },
-    { keys: ["agent", "agency", "contact", "phone", "email", "pic"], labels: ["agent", "agency", "contact"] },
-    { keys: ["restriction", "requirement", "rule", "prohibition", "allowed", "permission"], labels: ["restriction", "requirement"] },
-    { keys: ["port", "country", "location", "anchorage", "pilot", "tug"], labels: ["port", "information", "location"] }
+    { labels: ["key information", "summary", "basic details"], keys: ["vessel", "port", "country", "cargo", "agent", "time zone"] },
+    { labels: ["visual", "image", "reference"], keys: ["visual reference", "image", "figure", "map", "diagram", "photo"] },
+    { labels: ["overview", "about"], keys: ["overview", "about", "located", "port is"] },
+    { labels: ["arrival", "port stay", "date"], keys: ["arrival", "eta", "etb", "etd", "notice", "pilot station", "date of arrival"] },
+    { labels: ["anchorage"], keys: ["anchorage", "anchor", "anchored"] },
+    { labels: ["pilotage", "approach", "navigation"], keys: ["pilot", "vhf", "channel", "boarding", "ladder", "towage", "tug", "navigation"] },
+    { labels: ["berth", "terminal", "depth"], keys: ["berth", "terminal", "jetty", "depth", "draft", "quay", "salinity"] },
+    { labels: ["cargo", "operations"], keys: ["cargo", "loading", "discharging", "shore", "scale", "rate"] },
+    { labels: ["agent", "contact"], keys: ["agent", "agents", "agency", "email", "phone", "mobile", "contact"] },
+    { labels: ["document", "formalities", "pre arrival"], keys: ["documents", "crew list", "declaration", "certificate", "manifest", "passport", "ballast"] },
+    { labels: ["regulation", "security", "health", "shore leave", "crew change"], keys: ["regulations", "shore leave", "crew", "security", "health", "permitted", "inspection", "psc"] },
+    { labels: ["services", "supplies", "waste"], keys: ["garbage", "bunker", "fresh water", "sludge", "stores", "provisions", "waste"] },
+    { labels: ["publication", "chart"], keys: ["charts", "publications", "enc", "enp", "pilot vol"] },
+    { labels: ["remarks", "experience", "notes", "detailed"], keys: ["remarks", "note", "general information", "additional"] }
   ];
 
   let boost = 0;
-
   for (const group of groups) {
     const headingHit = group.labels.some((label) => h.includes(label));
+    if (!headingHit) continue;
     const sourceHits = group.keys.filter((key) => s.includes(key)).length;
-    if (headingHit && sourceHits) boost = Math.max(boost, Math.min(0.45, sourceHits * 0.08));
+    if (sourceHits) boost = Math.max(boost, Math.min(0.9, 0.25 + sourceHits * 0.1));
   }
 
   return boost;
@@ -945,11 +1253,9 @@ function buildSectionBlockText(sourceSection, targetHeading) {
     !sameMeaning(sourceHeading, targetHeading) &&
     !isBlockedText(sourceHeading);
 
-  if (shouldKeepSourceHeading && content) {
-    return cleanBusinessContent(`${sourceHeading}\n${content}`);
-  }
-
-  return content || sourceHeading;
+  return shouldKeepSourceHeading && content
+    ? cleanBusinessContent(`${sourceHeading}\n${content}`)
+    : content || sourceHeading;
 }
 
 function cleanAdditionalSections(sections) {
@@ -964,22 +1270,29 @@ function cleanAdditionalSections(sections) {
     .filter((section) => !isBlockedText(section.content));
 }
 
-function findOrCreateAdditionalSection(mappedSections) {
-  let section = mappedSections.find((item) => comparable(item.heading) === "additional details");
+function findFallbackSection(mappedSections) {
+  const outputRules = getOutputRules();
+  const allowExtraSections = boolRule(outputRules.allowExtraSections, false);
+  const fallbackSectionName = outputRules.fallbackSectionName || "Detailed Notes";
 
-  if (!section) {
-    section = {
-      id: `template-section-${mappedSections.length + 1}`,
-      order: mappedSections.length + 1,
-      heading: "Additional Details",
-      blocks: [],
-      matchedSourceIds: [],
-      score: 0,
-      pageNumbers: []
-    };
-    mappedSections.push(section);
-  }
+  let section = mappedSections.find(
+    (item) => comparable(item.heading) === comparable(fallbackSectionName)
+  );
 
+  if (section) return section;
+  if (!allowExtraSections) return null;
+
+  section = {
+    id: `template-section-${mappedSections.length + 1}`,
+    order: mappedSections.length + 1,
+    heading: fallbackSectionName,
+    blocks: [],
+    matchedSourceIds: [],
+    score: 0,
+    pageNumbers: []
+  };
+
+  mappedSections.push(section);
   return section;
 }
 
@@ -1017,8 +1330,9 @@ async function attachVisualsToSections({ sourcePdf, sections }) {
     const cropped = await cropRenderedVisual(visual);
     if (!cropped?.imageDataUrl) continue;
 
-    let target = sections.find((section) => section.pageNumbers.includes(visual.pageNumber));
-    if (!target && sections.length) target = sections[sections.length - 1];
+    let target = sections.find((section) => /visual/i.test(section.heading));
+    if (!target) target = sections.find((section) => section.pageNumbers.includes(visual.pageNumber));
+    if (!target && sections.length) target = sections[0];
     if (!target) continue;
 
     target.blocks.push({
@@ -1029,6 +1343,11 @@ async function attachVisualsToSections({ sourcePdf, sections }) {
       pageNumber: visual.pageNumber
     });
   }
+}
+
+function buildOutputTitle(sourcePdf, sourceProfile) {
+  const title = cleanDocumentTitle(sourceProfile.title || inferDocumentTitle(sourcePdf.fullText, sourcePdf.fileName));
+  return title || cleanDocumentTitle(removePdfExtension(sourcePdf.fileName).replace(/[_-]+/g, " "));
 }
 
 /* =========================================================
@@ -1045,11 +1364,22 @@ function documentToPlainText(doc) {
   lines.push(cleanDocumentTitle(doc.title));
   lines.push("");
 
+  if (doc.summaryRows?.length) {
+    lines.push("1. Key Information");
+    lines.push("");
+    for (const row of doc.summaryRows) {
+      lines.push(`${row.label}: ${row.value || getFallbackValue()}`);
+    }
+    lines.push("");
+  }
+
+  const offset = doc.summaryRows?.length ? 2 : 1;
+
   doc.sections.forEach((section, index) => {
     const heading = cleanHeading(section.heading);
     if (!heading || isBlockedText(heading)) return;
 
-    lines.push(`${index + 1}. ${heading}`);
+    lines.push(`${index + offset}. ${heading}`);
     lines.push("");
 
     for (const block of section.blocks) {
@@ -1106,11 +1436,7 @@ async function exportPdf() {
 }
 
 async function addDocumentToPdf(pdfDoc, doc, fonts) {
-  const pageSize = {
-    width: CONFIG.output.pageWidth,
-    height: CONFIG.output.pageHeight
-  };
-
+  const pageSize = { width: CONFIG.output.pageWidth, height: CONFIG.output.pageHeight };
   const margin = CONFIG.output.margin;
   const contentWidth = pageSize.width - margin * 2;
   const title = cleanDocumentTitle(doc.title);
@@ -1120,9 +1446,23 @@ async function addDocumentToPdf(pdfDoc, doc, fonts) {
 
   y = drawTitle(page, title, fonts, margin, y);
 
+  if (doc.summaryRows?.length) {
+    if (y < margin + 260) {
+      drawPageFooter(page, title, fonts, pageSize, margin);
+      page = pdfDoc.addPage([pageSize.width, pageSize.height]);
+      y = drawPageHeader(page, title, fonts, pageSize, margin);
+    }
+
+    y = drawSectionHeading(page, "1. Key Information", fonts, margin, contentWidth, y);
+    y = drawSummaryTable(page, doc.summaryRows, fonts, margin, contentWidth, y);
+    y -= CONFIG.output.sectionGap;
+  }
+
+  const offset = doc.summaryRows?.length ? 2 : 1;
+
   for (let s = 0; s < doc.sections.length; s++) {
     const section = doc.sections[s];
-    const heading = `${s + 1}. ${cleanHeading(section.heading)}`;
+    const heading = `${s + offset}. ${cleanHeading(section.heading)}`;
 
     if (isBlockedText(heading)) continue;
 
@@ -1194,9 +1534,59 @@ async function addDocumentToPdf(pdfDoc, doc, fonts) {
   drawPageFooter(page, title, fonts, pageSize, margin);
 }
 
+function drawSummaryTable(page, rows, fonts, margin, contentWidth, y) {
+  const rowHeight = CONFIG.output.tableRowHeight;
+  const labelWidth = contentWidth * 0.28;
+  const valueWidth = contentWidth * 0.72;
+
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+
+    if (y < margin + rowHeight + 35) break;
+
+    const fill = i % 2 === 0 ? rgb(0.94, 0.97, 0.985) : rgb(1, 1, 1);
+
+    page.drawRectangle({
+      x: margin,
+      y: y - rowHeight + 4,
+      width: contentWidth,
+      height: rowHeight,
+      color: fill,
+      borderColor: rgb(0.78, 0.86, 0.9),
+      borderWidth: 0.35
+    });
+
+    drawTableCell(page, row.label, margin + 5, y - 10, labelWidth - 10, fonts.bold, 7.8, rgb(0.13, 0.31, 0.43));
+    drawTableCell(page, row.value || getFallbackValue(), margin + labelWidth + 5, y - 10, valueWidth - 10, fonts.regular, 7.7, rgb(0.1, 0.12, 0.16));
+
+    page.drawLine({
+      start: { x: margin + labelWidth, y: y + 4 },
+      end: { x: margin + labelWidth, y: y - rowHeight + 4 },
+      thickness: 0.35,
+      color: rgb(0.78, 0.86, 0.9)
+    });
+
+    y -= rowHeight;
+  }
+
+  return y - 8;
+}
+
+function drawTableCell(page, text, x, y, width, font, size, color) {
+  const wrapped = wrapTextToWidth(String(text || getFallbackValue()), font, size, width).slice(0, 2);
+  wrapped.forEach((line, index) => {
+    page.drawText(sanitizeForPdf(line.substring(0, 90)), {
+      x,
+      y: y - index * 8.5,
+      size,
+      font,
+      color
+    });
+  });
+}
+
 function addBlankPageBreak(pdfDoc) {
-  const pageSize = [CONFIG.output.pageWidth, CONFIG.output.pageHeight];
-  pdfDoc.addPage(pageSize);
+  pdfDoc.addPage([CONFIG.output.pageWidth, CONFIG.output.pageHeight]);
 }
 
 function drawPageHeader(page, title, fonts, pageSize, margin) {
@@ -1283,24 +1673,33 @@ async function embedPngFromDataUrl(pdfDoc, dataUrl) {
 }
 
 /* =========================================================
-   UI RENDERING
+   UI + AUDIT
    ========================================================= */
 
-function renderDetectedDetails(templateProfile, documents) {
+function renderDetectedDetails(templateContract, documents) {
   const lines = [];
 
-  lines.push(`Template: ${templateProfile.fileName}`);
-  lines.push(`Template Pages: ${templateProfile.pageCount}`);
-  lines.push(`Detected Template Sections: ${templateProfile.sections.length}`);
+  lines.push(`Firebase Controller: ${state.templateController?.schemaId || "Not Loaded"}`);
+  lines.push(`Template: ${templateContract.fileName}`);
+  lines.push(`Template Pages: ${templateContract.pageCount}`);
+  lines.push(`Detected Header Fields: ${templateContract.headerFields.length}`);
+  lines.push(`Detected Template Sections: ${templateContract.sections.length}`);
   lines.push("");
 
-  templateProfile.sections.forEach((section) => {
+  if (templateContract.headerFields.length) {
+    lines.push("Header Fields:");
+    templateContract.headerFields.forEach((field) => {
+      lines.push(`${field.order}. ${field.label}`);
+    });
+    lines.push("");
+  }
+
+  lines.push("Template Sections:");
+  templateContract.sections.forEach((section) => {
     lines.push(`${section.order}. ${section.heading}`);
   });
 
-  lines.push("");
-  lines.push("-----------------------------");
-  lines.push("");
+  lines.push("", "-----------------------------", "");
 
   documents.forEach((doc, index) => {
     const imageCount = doc.sections.flatMap((section) => section.blocks).filter((block) => block.type === "image").length;
@@ -1308,6 +1707,7 @@ function renderDetectedDetails(templateProfile, documents) {
     lines.push(`Document ${index + 1}: ${doc.sourceFileName}`);
     lines.push(`Title: ${doc.title}`);
     lines.push(`Pages: ${doc.pageCount}`);
+    lines.push(`Detected Facts: ${doc.factsDetected}`);
     lines.push(`Detected Source Sections: ${doc.sourceSectionCount}`);
     lines.push(`Final Output Sections: ${doc.sections.length}`);
     lines.push(`Mapped Visuals: ${imageCount}`);
@@ -1319,7 +1719,6 @@ function renderDetectedDetails(templateProfile, documents) {
 
 function renderVisualPreview(documents) {
   if (!els.snapshotList) return;
-
   els.snapshotList.innerHTML = "";
 
   documents.forEach((doc, docIndex) => {
@@ -1345,18 +1744,16 @@ function renderVisualPreview(documents) {
   });
 }
 
-/* =========================================================
-   AUDIT LOG
-   ========================================================= */
-
-function buildAuditLog(templateProfile, documents) {
+function buildAuditLog(templateContract, documents) {
   return {
     generatedAt: new Date().toISOString(),
+    controller: state.templateController || null,
     template: {
-      fileName: templateProfile.fileName,
-      pageCount: templateProfile.pageCount,
-      title: templateProfile.title,
-      sections: templateProfile.sections.map((section) => ({
+      fileName: templateContract.fileName,
+      pageCount: templateContract.pageCount,
+      title: templateContract.title,
+      headerFields: templateContract.headerFields,
+      sections: templateContract.sections.map((section) => ({
         order: section.order,
         heading: section.heading,
         confidence: section.confidence
@@ -1366,7 +1763,9 @@ function buildAuditLog(templateProfile, documents) {
       fileName: doc.sourceFileName,
       title: doc.title,
       pageCount: doc.pageCount,
+      factsDetected: doc.factsDetected,
       sourceSectionCount: doc.sourceSectionCount,
+      summaryRows: doc.summaryRows,
       outputSections: doc.sections.map((section) => ({
         order: section.order,
         heading: section.heading,
@@ -1385,21 +1784,17 @@ function exportAuditLog() {
     return;
   }
 
-  const blob = new Blob([JSON.stringify(state.auditLog, null, 2)], {
-    type: "application/json"
-  });
-
+  const blob = new Blob([JSON.stringify(state.auditLog, null, 2)], { type: "application/json" });
   downloadBlob(blob, "Document_Audit_Log.json", "application/json");
   setStatus("Audit log exported successfully.", "success");
 }
 
 /* =========================================================
-   TEXT CLEANING / TITLE LOGIC
+   CLEANING + SCORING
    ========================================================= */
 
 function inferDocumentTitle(fullText, fileName) {
   const fileTitle = cleanDocumentTitle(removePdfExtension(fileName).replace(/[_-]+/g, " "));
-
   const lines = cleanExtractedText(fullText)
     .split("\n")
     .map(normalizeLine)
@@ -1414,8 +1809,7 @@ function inferDocumentTitle(fullText, fileName) {
     return headingPatternScore(line) >= 0.35 || /^[A-Z][A-Za-z0-9 ,/&()'’.-]+$/.test(line);
   });
 
-  if (candidates.length) return cleanDocumentTitle(candidates[0]);
-  return fileTitle || "Document";
+  return candidates.length ? cleanDocumentTitle(candidates[0]) : fileTitle || "Document";
 }
 
 function cleanExtractedText(text) {
@@ -1491,7 +1885,7 @@ function looksLikeBodySentence(text) {
 
   if (words.length > 14) return true;
   if (/[.!?]$/.test(value) && words.length > 8) return true;
-  if (/^(the|this|these|those|it|they|we|please|kindly)\b/i.test(value) && words.length > 7) return true;
+  if (/^(the|this|these|those|it|they|we|please|kindly|according|during)\b/i.test(value) && words.length > 7) return true;
 
   return false;
 }
@@ -1507,16 +1901,20 @@ function sameMeaning(a, b) {
   return weightedTokenOverlap(tokenize(a), tokenize(b)) > 0.68;
 }
 
-/* =========================================================
-   TOKEN SCORING
-   ========================================================= */
+function normalizeChannels(text) {
+  return String(text || "")
+    .replace(/[;,]+/g, "/")
+    .replace(/\s+/g, " ")
+    .replace(/\s*\/\s*/g, " / ")
+    .trim();
+}
 
 function tokenize(text) {
   const stopWords = new Set([
     "the", "and", "or", "of", "to", "in", "for", "on", "by", "with", "from", "as", "at",
     "is", "are", "was", "were", "be", "been", "being", "this", "that", "these", "those",
     "a", "an", "details", "information", "document", "report", "section", "page", "source",
-    "template", "updated", "formatted", "general", "main"
+    "template", "updated", "formatted", "general", "main", "not", "available"
   ]);
 
   return comparable(text)
@@ -1619,7 +2017,8 @@ function downloadBlob(data, fileName, mimeType) {
 function resetTool() {
   state.templateFile = null;
   state.sourceFiles = [];
-  state.templateProfile = null;
+  state.templateController = null;
+  state.templateContract = null;
   state.documents = [];
   state.auditLog = null;
 
