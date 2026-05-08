@@ -31,7 +31,6 @@ const state = {
   templateData: null,
   templateStructure: null,
   processedDocs: [],
-  combinedOutput: "",
   auditLog: null
 };
 
@@ -41,9 +40,9 @@ const CONFIG = {
   minHeadingLength: 3,
   maxSnapshotPagesPerSource: 150,
   maxTemplateSnapshotPages: 5,
-  includeUnmappedContent: true,
-  includeMappedPageImages: true,
-  includeUnmappedPageImages: true
+  includeAdditionalDetails: true,
+  includeImagesInsideSections: true,
+  imageMaxHeight: 360
 };
 
 bindEvents();
@@ -90,12 +89,12 @@ function handleSourceUpload(event) {
 
 async function processDocuments() {
   if (!state.templateFile) {
-    setStatus("Please upload a sample/template PDF first.", "error");
+    setStatus("Please upload a template PDF first.", "error");
     return;
   }
 
   if (!state.sourceFiles.length) {
-    setStatus("Please upload at least one source PDF.", "error");
+    setStatus("Please upload at least one document to update.", "error");
     return;
   }
 
@@ -131,12 +130,13 @@ async function processDocuments() {
       });
 
       const sourceSections = splitIntoSections(sourceData.fullText);
+
       const mappedResult = mapSourceToTemplate({
         templateSections: templateStructure.sections,
         sourceSections
       });
 
-      const outputText = buildCleanOutputText({
+      const outputText = buildBusinessDocumentText({
         sourceData,
         templateStructure,
         mappedResult
@@ -144,6 +144,7 @@ async function processDocuments() {
 
       processedDocs.push({
         sourceFileName: file.name,
+        title: inferDocumentTitle(sourceData.fullText, file.name),
         sourceData,
         sourceSections,
         mappedResult,
@@ -154,16 +155,8 @@ async function processDocuments() {
 
     state.processedDocs = processedDocs;
 
-    state.combinedOutput = processedDocs
-      .map((doc, index) => {
-        if (processedDocs.length === 1) return doc.outputText;
-
-        return [
-          `${index + 1}. ${removePdfExtension(doc.sourceFileName)}`,
-          "",
-          doc.outputText
-        ].join("\n");
-      })
+    els.formattedPreview.value = processedDocs
+      .map(doc => doc.outputText)
       .join("\n\n");
 
     state.auditLog = buildAuditLog({
@@ -172,20 +165,18 @@ async function processDocuments() {
       processedDocs
     });
 
-    els.formattedPreview.value = state.combinedOutput;
-
     renderDetectedDetails({
       templateData,
       templateStructure,
       processedDocs
     });
 
-    renderMappedSnapshots(processedDocs);
+    renderSnapshotPreview(processedDocs);
 
     els.exportPdfBtn.disabled = false;
     els.exportAuditBtn.disabled = false;
 
-    setStatus("Processing complete. Review the preview before export.", "success");
+    setStatus("Processing complete. Review the content before export.", "success");
   } catch (error) {
     console.error(error);
     setStatus(`Failed: ${error.message}`, "error");
@@ -316,28 +307,25 @@ async function renderPageSnapshot(page, scale = 1.5) {
 function extractTemplateStructure(templateData) {
   const headings = detectHeadings(templateData.fullText);
 
-  let sections = headings.map((heading, index) => ({
-    id: `template-section-${index + 1}`,
-    heading: cleanHeading(heading.text),
+  const sections = headings.map((heading, index) => ({
+    id: `section-${index + 1}`,
+    heading: cleanTemplateHeading(heading.text),
     pageNumber: heading.pageNumber,
     order: index + 1
   }));
 
-  if (!sections.length) {
-    sections = [
-      {
-        id: "template-section-1",
-        heading: inferDocumentTitle(templateData.fullText, templateData.fileName),
-        pageNumber: 1,
-        order: 1
-      }
-    ];
-  }
-
   return {
     title: inferDocumentTitle(templateData.fullText, templateData.fileName),
-    sections,
-    sourceFileName: templateData.fileName
+    sections: sections.length
+      ? sections
+      : [
+          {
+            id: "section-1",
+            heading: inferDocumentTitle(templateData.fullText, templateData.fileName),
+            pageNumber: 1,
+            order: 1
+          }
+        ]
   };
 }
 
@@ -345,9 +333,7 @@ function detectHeadings(fullText) {
   const result = [];
   let currentPage = 1;
 
-  const lines = fullText.split("\n");
-
-  for (const rawLine of lines) {
+  for (const rawLine of fullText.split("\n")) {
     const line = normalizeLine(rawLine);
 
     const pageMatch = line.match(/^--- PAGE (\d+) ---$/i);
@@ -417,7 +403,7 @@ function dedupeHeadings(headings) {
   const result = [];
 
   for (const heading of headings) {
-    const key = cleanHeading(heading.text).toLowerCase();
+    const key = cleanTemplateHeading(heading.text).toLowerCase();
 
     if (!key || seen.has(key)) continue;
 
@@ -435,7 +421,7 @@ function splitIntoSections(fullText) {
   let currentPage = 1;
 
   let current = {
-    heading: "General Content",
+    heading: "General Details",
     contentLines: [],
     pageNumber: 1,
     pageNumbers: new Set([1])
@@ -459,7 +445,7 @@ function splitIntoSections(fullText) {
       pushCurrentSection();
 
       current = {
-        heading: cleanHeading(line),
+        heading: cleanSourceHeading(line),
         contentLines: [],
         pageNumber: currentPage,
         pageNumbers: new Set([currentPage])
@@ -474,7 +460,7 @@ function splitIntoSections(fullText) {
 
   if (!sections.length && normalizeText(fullText)) {
     sections.push({
-      heading: "Main Content",
+      heading: "Main Details",
       content: normalizeText(fullText),
       pageNumber: 1,
       pageNumbers: [1]
@@ -583,7 +569,9 @@ function mapSourceToTemplate({ templateSections, sourceSections }) {
     section.finalContent = section.matchedSourceSections
       .map(match => {
         const heading =
-          match.sourceHeading && match.sourceHeading !== "General Content"
+          match.sourceHeading &&
+          match.sourceHeading !== "General Details" &&
+          !sameMeaningHeading(match.sourceHeading, section.templateHeading)
             ? `${match.sourceHeading}\n`
             : "";
 
@@ -598,7 +586,7 @@ function mapSourceToTemplate({ templateSections, sourceSections }) {
     ).sort((a, b) => a - b);
   });
 
-  const unmappedSections = sourceSections
+  const additionalSections = sourceSections
     .map((section, index) => ({
       ...section,
       sourceIndex: index
@@ -608,10 +596,10 @@ function mapSourceToTemplate({ templateSections, sourceSections }) {
 
   return {
     mappedSections,
-    unmappedSections,
+    additionalSections,
     totalSourceSections: sourceSections.length,
     mappedSourceSectionCount: usedSourceIndexes.size,
-    unmappedSourceSectionCount: unmappedSections.length
+    additionalSourceSectionCount: additionalSections.length
   };
 }
 
@@ -625,7 +613,7 @@ function calculateSectionSimilarity(templateHeading, sourceHeading, sourceConten
   const headingScore = jaccardSimilarity(templateTokens, sourceHeadingTokens);
   const contentScore = jaccardSimilarity(templateTokens, sourceContentTokens);
 
-  return headingScore * 0.78 + contentScore * 0.22;
+  return headingScore * 0.8 + contentScore * 0.2;
 }
 
 function tokenize(text) {
@@ -685,7 +673,7 @@ function jaccardSimilarity(tokensA, tokensB) {
   return union ? intersection / union : 0;
 }
 
-function buildCleanOutputText({ sourceData, templateStructure, mappedResult }) {
+function buildBusinessDocumentText({ sourceData, mappedResult }) {
   const title = inferDocumentTitle(sourceData.fullText, sourceData.fileName);
   const lines = [];
 
@@ -693,25 +681,22 @@ function buildCleanOutputText({ sourceData, templateStructure, mappedResult }) {
   lines.push("");
 
   mappedResult.mappedSections.forEach((section, index) => {
-    const heading = section.templateHeading || `Section ${index + 1}`;
     const content = normalizeText(section.finalContent);
 
-    lines.push(`${index + 1}. ${heading}`);
+    if (!content) return;
+
+    lines.push(`${index + 1}. ${section.templateHeading}`);
     lines.push("");
-
-    if (content) {
-      lines.push(content);
-    }
-
+    lines.push(content);
     lines.push("");
   });
 
-  if (CONFIG.includeUnmappedContent && mappedResult.unmappedSections.length) {
-    lines.push(`${mappedResult.mappedSections.length + 1}. Additional Source Content`);
+  if (CONFIG.includeAdditionalDetails && mappedResult.additionalSections.length) {
+    lines.push("Additional Details");
     lines.push("");
 
-    mappedResult.unmappedSections.forEach(section => {
-      if (section.heading && section.heading !== "General Content") {
+    mappedResult.additionalSections.forEach(section => {
+      if (section.heading && section.heading !== "General Details") {
         lines.push(section.heading);
         lines.push("");
       }
@@ -722,98 +707,6 @@ function buildCleanOutputText({ sourceData, templateStructure, mappedResult }) {
   }
 
   return normalizeText(lines.join("\n"));
-}
-
-function inferDocumentTitle(fullText, fileName) {
-  const lines = fullText
-    .split("\n")
-    .map(line => normalizeLine(line))
-    .filter(Boolean)
-    .filter(line => !/^--- PAGE \d+ ---$/i.test(line));
-
-  const firstHeading = lines.find(line => {
-    if (line.length < 4 || line.length > 120) return false;
-    if (/^page\s+\d+/i.test(line)) return false;
-    return isLikelyHeading(line);
-  });
-
-  if (firstHeading) return cleanHeading(firstHeading);
-
-  return removePdfExtension(fileName).replace(/[_-]+/g, " ");
-}
-
-function renderDetectedDetails({ templateData, templateStructure, processedDocs }) {
-  const lines = [];
-
-  lines.push(`Template: ${templateData.fileName}`);
-  lines.push(`Template Pages: ${templateData.pageCount}`);
-  lines.push(`Detected Template Sections: ${templateStructure.sections.length}`);
-  lines.push("");
-
-  templateStructure.sections.forEach(section => {
-    lines.push(`${section.order}. ${section.heading}`);
-  });
-
-  lines.push("");
-  lines.push("-----------------------------");
-  lines.push("");
-
-  processedDocs.forEach((doc, index) => {
-    lines.push(`Source ${index + 1}: ${doc.sourceFileName}`);
-    lines.push(`Pages: ${doc.sourceData.pageCount}`);
-    lines.push(`Detected Source Sections: ${doc.sourceSections.length}`);
-    lines.push(`Mapped Source Sections: ${doc.mappedResult.mappedSourceSectionCount}`);
-    lines.push(`Additional Source Sections: ${doc.mappedResult.unmappedSourceSectionCount}`);
-    lines.push("");
-
-    doc.mappedResult.mappedSections.forEach(section => {
-      lines.push(
-        `- ${section.templateHeading}: ${
-          section.matchedSourceSections.length
-            ? `Mapped | Pages: ${section.mappedPageNumbers.join(", ")}`
-            : "No matched source content"
-        }`
-      );
-    });
-
-    lines.push("");
-    lines.push("-----------------------------");
-    lines.push("");
-  });
-
-  els.detectedDetails.textContent = lines.join("\n");
-}
-
-function renderMappedSnapshots(processedDocs) {
-  els.snapshotList.innerHTML = "";
-
-  processedDocs.forEach((doc, docIndex) => {
-    const mappedPages = new Set();
-
-    doc.mappedResult.mappedSections.forEach(section => {
-      section.mappedPageNumbers.forEach(page => mappedPages.add(page));
-    });
-
-    doc.snapshots.forEach(snapshot => {
-      const card = document.createElement("div");
-      card.className = "snapshot-card";
-
-      const img = document.createElement("img");
-      img.src = snapshot.imageDataUrl;
-      img.alt = `${doc.sourceFileName} page ${snapshot.pageNumber}`;
-
-      const label = document.createElement("p");
-      const mappedText = mappedPages.has(snapshot.pageNumber)
-        ? "Mapped to section"
-        : "Additional source page";
-
-      label.textContent = `Document ${docIndex + 1} | Page ${snapshot.pageNumber} | ${mappedText}`;
-
-      card.appendChild(img);
-      card.appendChild(label);
-      els.snapshotList.appendChild(card);
-    });
-  });
 }
 
 async function exportPdf() {
@@ -843,12 +736,12 @@ async function exportPdf() {
       const doc = state.processedDocs[docIndex];
 
       if (docIndex > 0) {
-        addSimpleDividerPage({
+        addDividerPage({
           pdfDoc,
           pageSize,
           margin,
           boldFont,
-          text: removePdfExtension(doc.sourceFileName)
+          text: doc.title
         });
       }
 
@@ -890,30 +783,29 @@ async function addDocumentToPdf({
   boldFont,
   italicFont
 }) {
-  const title = inferDocumentTitle(doc.sourceData.fullText, doc.sourceFileName);
-
   let page = pdfDoc.addPage([pageSize.width, pageSize.height]);
   let y = pageSize.height - margin;
 
   drawHeader(page, {
-    title,
+    title: doc.title,
     font: boldFont,
     pageSize,
     margin
   });
 
-  y -= 48;
+  y -= 52;
 
-  for (let sectionIndex = 0; sectionIndex < doc.mappedResult.mappedSections.length; sectionIndex++) {
-    const section = doc.mappedResult.mappedSections[sectionIndex];
-    const heading = `${sectionIndex + 1}. ${section.templateHeading}`;
+  for (let i = 0; i < doc.mappedResult.mappedSections.length; i++) {
+    const section = doc.mappedResult.mappedSections[i];
     const content = normalizeText(section.finalContent);
+
+    if (!content && !section.mappedPageNumbers.length) continue;
 
     const result = drawSectionText({
       pdfDoc,
       page,
       y,
-      heading,
+      heading: `${i + 1}. ${section.templateHeading}`,
       content,
       pageSize,
       margin,
@@ -921,14 +813,14 @@ async function addDocumentToPdf({
       regularFont,
       boldFont,
       italicFont,
-      footer: title
+      footer: doc.title
     });
 
     page = result.page;
     y = result.y;
 
-    if (CONFIG.includeMappedPageImages && section.mappedPageNumbers.length) {
-      const imageResult = await drawMappedPageImages({
+    if (CONFIG.includeImagesInsideSections && section.mappedPageNumbers.length) {
+      const imageResult = await drawSectionImages({
         pdfDoc,
         page,
         y,
@@ -939,7 +831,7 @@ async function addDocumentToPdf({
         contentWidth,
         regularFont,
         boldFont,
-        footer: title
+        footer: doc.title
       });
 
       page = imageResult.page;
@@ -947,11 +839,11 @@ async function addDocumentToPdf({
     }
   }
 
-  if (CONFIG.includeUnmappedContent && doc.mappedResult.unmappedSections.length) {
-    const unmappedText = doc.mappedResult.unmappedSections
+  if (CONFIG.includeAdditionalDetails && doc.mappedResult.additionalSections.length) {
+    const additionalText = doc.mappedResult.additionalSections
       .map(section => {
         const heading =
-          section.heading && section.heading !== "General Content"
+          section.heading && section.heading !== "General Details"
             ? `${section.heading}\n`
             : "";
 
@@ -963,47 +855,45 @@ async function addDocumentToPdf({
       pdfDoc,
       page,
       y,
-      heading: `${doc.mappedResult.mappedSections.length + 1}. Additional Source Content`,
-      content: unmappedText,
+      heading: "Additional Details",
+      content: additionalText,
       pageSize,
       margin,
       contentWidth,
       regularFont,
       boldFont,
       italicFont,
-      footer: title
+      footer: doc.title
     });
 
     page = result.page;
     y = result.y;
 
-    if (CONFIG.includeUnmappedPageImages) {
-      const unmappedPages = Array.from(
-        new Set(
-          doc.mappedResult.unmappedSections.flatMap(section => section.pageNumbers || [])
-        )
-      ).sort((a, b) => a - b);
+    const additionalPages = Array.from(
+      new Set(
+        doc.mappedResult.additionalSections.flatMap(section => section.pageNumbers || [])
+      )
+    ).sort((a, b) => a - b);
 
-      const imageResult = await drawMappedPageImages({
-        pdfDoc,
-        page,
-        y,
-        pageNumbers: unmappedPages,
-        snapshots: doc.snapshots,
-        pageSize,
-        margin,
-        contentWidth,
-        regularFont,
-        boldFont,
-        footer: title
-      });
+    const imageResult = await drawSectionImages({
+      pdfDoc,
+      page,
+      y,
+      pageNumbers: additionalPages,
+      snapshots: doc.snapshots,
+      pageSize,
+      margin,
+      contentWidth,
+      regularFont,
+      boldFont,
+      footer: doc.title
+    });
 
-      page = imageResult.page;
-      y = imageResult.y;
-    }
+    page = imageResult.page;
+    y = imageResult.y;
   }
 
-  drawFooter(page, title, regularFont, pageSize, margin);
+  drawFooter(page, doc.title, regularFont, pageSize, margin);
 }
 
 function drawSectionText({
@@ -1017,7 +907,6 @@ function drawSectionText({
   contentWidth,
   regularFont,
   boldFont,
-  italicFont,
   footer
 }) {
   if (y < margin + 100) {
@@ -1057,7 +946,6 @@ function drawSectionText({
 
     if (y < margin + 45) {
       drawFooter(page, footer, regularFont, pageSize, margin);
-
       page = pdfDoc.addPage([pageSize.width, pageSize.height]);
       y = pageSize.height - margin;
     }
@@ -1080,7 +968,7 @@ function drawSectionText({
   return { page, y };
 }
 
-async function drawMappedPageImages({
+async function drawSectionImages({
   pdfDoc,
   page,
   y,
@@ -1090,7 +978,6 @@ async function drawMappedPageImages({
   margin,
   contentWidth,
   regularFont,
-  boldFont,
   footer
 }) {
   const uniquePageNumbers = Array.from(new Set(pageNumbers)).sort((a, b) => a - b);
@@ -1102,29 +989,18 @@ async function drawMappedPageImages({
     const image = await pdfDoc.embedPng(snapshot.imageDataUrl);
 
     const maxWidth = contentWidth;
-    const maxHeight = 460;
+    const maxHeight = CONFIG.imageMaxHeight;
 
     const scale = Math.min(maxWidth / image.width, maxHeight / image.height);
 
     const imgWidth = image.width * scale;
     const imgHeight = image.height * scale;
 
-    if (y < margin + imgHeight + 45) {
+    if (y < margin + imgHeight + 35) {
       drawFooter(page, footer, regularFont, pageSize, margin);
-
       page = pdfDoc.addPage([pageSize.width, pageSize.height]);
       y = pageSize.height - margin;
     }
-
-    page.drawText(`Source Page ${pageNumber}`, {
-      x: margin,
-      y,
-      size: 9,
-      font: boldFont,
-      color: rgb(0.35, 0.4, 0.48)
-    });
-
-    y -= 12;
 
     page.drawImage(image, {
       x: margin,
@@ -1139,20 +1015,8 @@ async function drawMappedPageImages({
   return { page, y };
 }
 
-function addSimpleDividerPage({ pdfDoc, pageSize, margin, boldFont, text }) {
-  const page = pdfDoc.addPage([pageSize.width, pageSize.height]);
-
-  page.drawText(sanitizeForPdf(text.substring(0, 90)), {
-    x: margin,
-    y: pageSize.height / 2,
-    size: 18,
-    font: boldFont,
-    color: rgb(0.13, 0.31, 0.43)
-  });
-}
-
 function drawHeader(page, { title, font, pageSize, margin }) {
-  page.drawText(sanitizeForPdf(title.substring(0, 85)), {
+  page.drawText(sanitizeForPdf(title.substring(0, 90)), {
     x: margin,
     y: pageSize.height - 34,
     size: 13,
@@ -1185,23 +1049,79 @@ function drawFooter(page, footer, font, pageSize, margin) {
   });
 }
 
+function addDividerPage({ pdfDoc, pageSize, margin, boldFont, text }) {
+  const page = pdfDoc.addPage([pageSize.width, pageSize.height]);
+
+  page.drawText(sanitizeForPdf(text.substring(0, 90)), {
+    x: margin,
+    y: pageSize.height / 2,
+    size: 18,
+    font: boldFont,
+    color: rgb(0.13, 0.31, 0.43)
+  });
+}
+
+function renderDetectedDetails({ templateData, templateStructure, processedDocs }) {
+  const lines = [];
+
+  lines.push(`Template: ${templateData.fileName}`);
+  lines.push(`Template Pages: ${templateData.pageCount}`);
+  lines.push(`Detected Sections: ${templateStructure.sections.length}`);
+  lines.push("");
+
+  templateStructure.sections.forEach(section => {
+    lines.push(`${section.order}. ${section.heading}`);
+  });
+
+  lines.push("");
+  lines.push("-----------------------------");
+  lines.push("");
+
+  processedDocs.forEach((doc, index) => {
+    lines.push(`Document ${index + 1}: ${doc.sourceFileName}`);
+    lines.push(`Pages: ${doc.sourceData.pageCount}`);
+    lines.push(`Detected Sections: ${doc.sourceSections.length}`);
+    lines.push(`Mapped Sections: ${doc.mappedResult.mappedSourceSectionCount}`);
+    lines.push(`Additional Sections: ${doc.mappedResult.additionalSourceSectionCount}`);
+    lines.push("");
+  });
+
+  els.detectedDetails.textContent = lines.join("\n");
+}
+
+function renderSnapshotPreview(processedDocs) {
+  els.snapshotList.innerHTML = "";
+
+  processedDocs.forEach((doc, docIndex) => {
+    doc.snapshots.forEach(snapshot => {
+      const card = document.createElement("div");
+      card.className = "snapshot-card";
+
+      const img = document.createElement("img");
+      img.src = snapshot.imageDataUrl;
+      img.alt = `${doc.sourceFileName} page ${snapshot.pageNumber}`;
+
+      const label = document.createElement("p");
+      label.textContent = `Document ${docIndex + 1} | Page ${snapshot.pageNumber}`;
+
+      card.appendChild(img);
+      card.appendChild(label);
+      els.snapshotList.appendChild(card);
+    });
+  });
+}
+
 function exportAuditLog() {
   if (!state.auditLog) {
     setStatus("No audit log available.", "error");
     return;
   }
 
-  const audit = {
-    ...state.auditLog,
-    exportedAt: new Date().toISOString()
-  };
-
-  const blob = new Blob([JSON.stringify(audit, null, 2)], {
+  const blob = new Blob([JSON.stringify(state.auditLog, null, 2)], {
     type: "application/json"
   });
 
-  downloadBlob(blob, "Document_Update_Audit_Log.json", "application/json");
-
+  downloadBlob(blob, "Document_Audit_Log.json", "application/json");
   setStatus("Audit log exported successfully.", "success");
 }
 
@@ -1217,30 +1137,73 @@ function buildAuditLog({ templateData, templateStructure, processedDocs }) {
         pageNumber: section.pageNumber
       }))
     },
-    sourceDocuments: processedDocs.map(doc => ({
-      sourceFileName: doc.sourceFileName,
+    documents: processedDocs.map(doc => ({
+      fileName: doc.sourceFileName,
+      title: doc.title,
       pageCount: doc.sourceData.pageCount,
-      detectedSourceSectionCount: doc.sourceSections.length,
-      mappedSourceSectionCount: doc.mappedResult.mappedSourceSectionCount,
-      additionalSourceSectionCount: doc.mappedResult.unmappedSourceSectionCount,
+      detectedSections: doc.sourceSections.length,
       mappedSections: doc.mappedResult.mappedSections.map(section => ({
-        templateHeading: section.templateHeading,
+        heading: section.templateHeading,
         confidence: section.confidence,
-        sourcePages: section.mappedPageNumbers,
-        matchedSourceSections: section.matchedSourceSections.map(match => ({
-          sourceHeading: match.sourceHeading,
-          sourcePages: match.sourcePageNumbers,
+        pages: section.mappedPageNumbers,
+        matches: section.matchedSourceSections.map(match => ({
+          heading: match.sourceHeading,
+          pages: match.sourcePageNumbers,
           confidence: match.confidence,
           characterCount: match.content.length
         }))
       })),
-      additionalSourceSections: doc.mappedResult.unmappedSections.map(section => ({
+      additionalSections: doc.mappedResult.additionalSections.map(section => ({
         heading: section.heading,
-        sourcePages: section.pageNumbers,
+        pages: section.pageNumbers,
         characterCount: section.content.length
       }))
     }))
   };
+}
+
+function inferDocumentTitle(fullText, fileName) {
+  const cleanedFileName = removePdfExtension(fileName).replace(/[_-]+/g, " ");
+
+  const lines = fullText
+    .split("\n")
+    .map(line => normalizeLine(line))
+    .filter(Boolean)
+    .filter(line => !/^--- PAGE \d+ ---$/i.test(line));
+
+  const firstHeading = lines.find(line => {
+    if (line.length < 4 || line.length > 120) return false;
+    if (/^page\s+\d+/i.test(line)) return false;
+    if (/^source\s+page\s+\d+/i.test(line)) return false;
+    return isLikelyHeading(line);
+  });
+
+  if (firstHeading) return cleanSourceHeading(firstHeading);
+
+  return cleanedFileName;
+}
+
+function cleanTemplateHeading(text) {
+  return normalizeLine(text)
+    .replace(/^[-–—•\s]+/, "")
+    .replace(/^\d{1,3}\.\s*/, "")
+    .replace(/[:\-–—]+$/, "")
+    .trim();
+}
+
+function cleanSourceHeading(text) {
+  return normalizeLine(text)
+    .replace(/^[-–—•\s]+/, "")
+    .replace(/^source\s+page\s+\d+$/i, "")
+    .replace(/^\d{1,3}\.\s*/, "")
+    .replace(/[:\-–—]+$/, "")
+    .trim();
+}
+
+function sameMeaningHeading(a, b) {
+  const aTokens = tokenize(a);
+  const bTokens = tokenize(b);
+  return jaccardSimilarity(aTokens, bTokens) > 0.65;
 }
 
 function prepareTextLines(text, maxCharsPerLine) {
@@ -1328,7 +1291,6 @@ function resetTool() {
   state.templateData = null;
   state.templateStructure = null;
   state.processedDocs = [];
-  state.combinedOutput = "";
   state.auditLog = null;
 
   els.templatePdfInput.value = "";
@@ -1351,7 +1313,6 @@ function resetOutputOnly() {
   els.exportAuditBtn.disabled = true;
 
   state.processedDocs = [];
-  state.combinedOutput = "";
   state.auditLog = null;
 }
 
@@ -1367,13 +1328,6 @@ function normalizeLine(text) {
   return String(text || "")
     .replace(/\r/g, "")
     .replace(/[ \t]+/g, " ")
-    .trim();
-}
-
-function cleanHeading(text) {
-  return normalizeLine(text)
-    .replace(/^[-–—•\s]+/, "")
-    .replace(/[:\-–—]+$/, "")
     .trim();
 }
 
