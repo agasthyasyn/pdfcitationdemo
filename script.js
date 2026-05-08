@@ -5,6 +5,24 @@ pdfjsLib.GlobalWorkerOptions.workerSrc =
 
 const { PDFDocument, StandardFonts, rgb } = window.PDFLib;
 
+/*
+  Generic Template-Based PDF Formatter
+  ------------------------------------
+  Purpose:
+  1. Upload a sample/template PDF.
+  2. Upload one or more source PDFs.
+  3. Extract headings/sections from the template.
+  4. Extract headings/sections from the source.
+  5. Match source sections to template sections using keyword similarity.
+  6. Preserve unmatched content separately.
+  7. Preserve original source pages as snapshots.
+  8. Export formatted PDF + audit log.
+
+  Important:
+  This is a browser-only MVP. It does not perform AI-level understanding.
+  It is intentionally conservative to avoid data loss.
+*/
+
 const els = {
   templatePdfInput: document.getElementById("templatePdfInput"),
   sourcePdfInput: document.getElementById("sourcePdfInput"),
@@ -33,39 +51,64 @@ const els = {
 const state = {
   templateFile: null,
   sourceFiles: [],
+  templateData: null,
+  templateStructure: null,
   processedDocs: [],
   combinedOutput: "",
   auditLog: null
 };
 
-els.templatePdfInput.addEventListener("change", handleTemplateUpload);
-els.sourcePdfInput.addEventListener("change", handleSourceUpload);
-els.processBtn.addEventListener("click", processDocuments);
-els.exportPdfBtn.addEventListener("click", exportFormattedPdf);
-els.exportAuditBtn.addEventListener("click", exportAuditLog);
-els.resetBtn.addEventListener("click", resetTool);
+const CONFIG = {
+  maxSnapshotPagesPerSource: 100,
+  maxTemplateSnapshotPages: 5,
+
+  /*
+    Lower = more content gets mapped, but less accurate.
+    Higher = stricter mapping, but more content goes to unmapped.
+  */
+  mappingThreshold: 0.16,
+
+  /*
+    Used to detect likely headings from PDF text.
+    You can tune this later depending on your documents.
+  */
+  maxHeadingLength: 95,
+  minHeadingLength: 3
+};
+
+bindEvents();
+
+function bindEvents() {
+  els.templatePdfInput?.addEventListener("change", handleTemplateUpload);
+  els.sourcePdfInput?.addEventListener("change", handleSourceUpload);
+  els.processBtn?.addEventListener("click", processDocuments);
+  els.exportPdfBtn?.addEventListener("click", exportFormattedPdf);
+  els.exportAuditBtn?.addEventListener("click", exportAuditLog);
+  els.resetBtn?.addEventListener("click", resetTool);
+}
 
 function handleTemplateUpload(event) {
-  const file = event.target.files[0];
+  const file = event.target.files?.[0];
+
+  state.templateFile = file || null;
 
   if (!file) {
-    state.templateFile = null;
     els.templateFileInfo.textContent = "No template uploaded yet.";
+    setStatus("Template removed.");
     return;
   }
 
-  state.templateFile = file;
   els.templateFileInfo.textContent = `Template selected: ${file.name}`;
-  setStatus("Template PDF uploaded. Now upload source PDF(s).");
+  setStatus("Template PDF uploaded. Now upload the source PDF(s).");
 }
 
 function handleSourceUpload(event) {
   const files = Array.from(event.target.files || []);
-
   state.sourceFiles = files;
 
   if (!files.length) {
     els.sourceFileInfo.textContent = "No source documents uploaded yet.";
+    setStatus("Source documents removed.");
     return;
   }
 
@@ -83,78 +126,107 @@ async function processDocuments() {
   }
 
   if (!state.sourceFiles.length) {
-    setStatus("Please upload at least one source PDF to format.", "error");
+    setStatus("Please upload at least one source PDF.", "error");
     return;
   }
 
   resetOutputOnly();
 
   try {
-    setStatus("Reading template PDF structure...");
+    setStatus("Reading sample/template PDF...");
 
     const templateData = await extractPdfData(state.templateFile, {
       includeSnapshots: true,
-      maxSnapshotPages: 3
+      maxSnapshotPages: CONFIG.maxTemplateSnapshotPages
     });
+
+    const templateStructure = extractTemplateStructure(templateData);
+
+    state.templateData = templateData;
+    state.templateStructure = templateStructure;
+
+    if (!templateStructure.sections.length) {
+      throw new Error(
+        "Could not detect usable headings from the sample/template PDF. Please use a cleaner template with clear headings."
+      );
+    }
 
     const processedDocs = [];
 
     for (let i = 0; i < state.sourceFiles.length; i++) {
-      const file = state.sourceFiles[i];
+      const sourceFile = state.sourceFiles[i];
 
-      setStatus(`Processing source document ${i + 1} of ${state.sourceFiles.length}: ${file.name}`);
+      setStatus(
+        `Processing source document ${i + 1} of ${state.sourceFiles.length}: ${sourceFile.name}`
+      );
 
-      const sourceData = await extractPdfData(file, {
+      const sourceData = await extractPdfData(sourceFile, {
         includeSnapshots: true,
-        maxSnapshotPages: 100
+        maxSnapshotPages: CONFIG.maxSnapshotPagesPerSource
       });
 
-      const detected = detectPortInformation(sourceData.fullText, file.name);
-      const sections = mapTextToStandardSections(sourceData.fullText);
+      const sourceSections = splitIntoSections(sourceData.fullText);
+      const mappedResult = mapSourceToTemplate({
+        templateSections: templateStructure.sections,
+        sourceSections
+      });
 
-      const finalDetails = applyManualOverrides(detected);
-
-      const formattedText = buildStandardizedOutput({
-        fileName: file.name,
-        details: finalDetails,
-        sections
+      const formattedText = buildTemplateBasedOutput({
+        templateData,
+        templateStructure,
+        sourceData,
+        mappedResult
       });
 
       processedDocs.push({
-        sourceFileName: file.name,
-        templateFileName: state.templateFile.name,
-        detected: finalDetails,
-        sections,
+        sourceFileName: sourceFile.name,
+        sourceData,
+        sourceSections,
+        mappedResult,
         formattedText,
-        snapshots: sourceData.snapshots,
-        pageCount: sourceData.pageCount,
-        extractedCharacterCount: sourceData.fullText.length,
-        templateReference: {
-          templateFileName: state.templateFile.name,
-          pageCount: templateData.pageCount,
-          extractedCharacterCount: templateData.fullText.length
-        }
+        snapshots: sourceData.snapshots
       });
     }
 
     state.processedDocs = processedDocs;
+
     state.combinedOutput = processedDocs
       .map((doc, index) => {
         if (processedDocs.length === 1) return doc.formattedText;
-        return `DOCUMENT ${index + 1}\n${doc.formattedText}`;
+
+        return [
+          `============================================================`,
+          `DOCUMENT ${index + 1}: ${doc.sourceFileName}`,
+          `============================================================`,
+          ``,
+          doc.formattedText
+        ].join("\n");
       })
       .join("\n\n\n");
 
-    state.auditLog = buildAuditLog(templateData, processedDocs);
+    state.auditLog = buildAuditLog({
+      templateData,
+      templateStructure,
+      processedDocs
+    });
 
     els.formattedPreview.value = state.combinedOutput;
-    renderDetectedDetails(processedDocs);
+
+    renderDetectedDetails({
+      templateData,
+      templateStructure,
+      processedDocs
+    });
+
     renderSnapshots(processedDocs);
 
     els.exportPdfBtn.disabled = false;
     els.exportAuditBtn.disabled = false;
 
-    setStatus("Processing complete. Review the formatted output before export.", "success");
+    setStatus(
+      "Processing complete. Review the preview before exporting the final PDF.",
+      "success"
+    );
   } catch (error) {
     console.error(error);
     setStatus(`Failed to process document: ${error.message}`, "error");
@@ -166,22 +238,36 @@ async function extractPdfData(file, options = {}) {
   const maxSnapshotPages = options.maxSnapshotPages ?? 100;
 
   const arrayBuffer = await file.arrayBuffer();
-  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+
+  const pdf = await pdfjsLib.getDocument({
+    data: arrayBuffer,
+    useSystemFonts: true
+  }).promise;
 
   const pageTexts = [];
   const snapshots = [];
 
   for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber++) {
-    const page = await pdf.getPage(pageNumber);
+    setStatus(`Reading ${file.name} - page ${pageNumber} of ${pdf.numPages}`);
 
+    const page = await pdf.getPage(pageNumber);
     const textContent = await page.getTextContent();
-    const pageText = textContent.items
-      .map(item => item.str)
-      .join(" ");
+
+    const textItems = textContent.items.map(item => ({
+      text: item.str || "",
+      x: item.transform?.[4] || 0,
+      y: item.transform?.[5] || 0,
+      width: item.width || 0,
+      height: item.height || 0,
+      fontName: item.fontName || ""
+    }));
+
+    const pageText = buildReadablePageText(textItems);
 
     pageTexts.push({
       pageNumber,
-      text: normalizeSpacing(pageText)
+      text: normalizeText(pageText),
+      rawItems: textItems
     });
 
     if (includeSnapshots && pageNumber <= maxSnapshotPages) {
@@ -201,9 +287,59 @@ async function extractPdfData(file, options = {}) {
     fileName: file.name,
     pageCount: pdf.numPages,
     pageTexts,
-    fullText: normalizeSpacing(fullText),
+    fullText: normalizeText(fullText),
     snapshots
   };
+}
+
+/*
+  Builds readable lines from PDF text items using Y-position grouping.
+  This is more stable than simply joining all text fragments with spaces.
+*/
+function buildReadablePageText(items) {
+  if (!items.length) return "";
+
+  const cleaned = items
+    .filter(item => item.text && item.text.trim())
+    .sort((a, b) => {
+      const yDiff = Math.round(b.y) - Math.round(a.y);
+      if (Math.abs(yDiff) > 3) return yDiff;
+      return a.x - b.x;
+    });
+
+  const lines = [];
+  let currentLine = [];
+  let currentY = null;
+
+  for (const item of cleaned) {
+    if (currentY === null) {
+      currentY = item.y;
+      currentLine.push(item);
+      continue;
+    }
+
+    if (Math.abs(item.y - currentY) <= 3) {
+      currentLine.push(item);
+    } else {
+      lines.push(currentLine);
+      currentLine = [item];
+      currentY = item.y;
+    }
+  }
+
+  if (currentLine.length) lines.push(currentLine);
+
+  return lines
+    .map(line =>
+      line
+        .sort((a, b) => a.x - b.x)
+        .map(item => item.text)
+        .join(" ")
+        .replace(/\s+/g, " ")
+        .trim()
+    )
+    .filter(Boolean)
+    .join("\n");
 }
 
 async function renderPageSnapshot(page, scale = 1.5) {
@@ -223,347 +359,543 @@ async function renderPageSnapshot(page, scale = 1.5) {
   return canvas.toDataURL("image/png");
 }
 
-function detectPortInformation(text, fileName) {
-  const clean = normalizeSpacing(text);
+function extractTemplateStructure(templateData) {
+  const headings = detectHeadings(templateData.fullText);
 
-  const yearMatch =
-    clean.match(/\b(20[0-9]{2})\b/) ||
-    fileName.match(/\b(20[0-9]{2})\b/);
+  let sections = [];
 
-  const vesselMatch =
-    clean.match(/\b(CS\s+[A-Z][A-Z0-9-]+)\b/i) ||
-    fileName.match(/\b(CS[_\s-]?[A-Z][A-Z0-9-]+)\b/i) ||
-    clean.match(/\b(MV\s+[A-Z][A-Z0-9-]+)\b/i) ||
-    fileName.match(/\b(MV[_\s-]?[A-Z][A-Z0-9-]+)\b/i);
+  if (headings.length >= 2) {
+    sections = headings.map((heading, index) => ({
+      id: `template-section-${index + 1}`,
+      heading: cleanHeading(heading.text),
+      headingRaw: heading.text,
+      pageNumber: heading.pageNumber,
+      order: index + 1
+    }));
+  } else {
+    /*
+      Fallback if headings are not cleanly detected.
+      This keeps the tool working instead of failing silently.
+    */
+    sections = [
+      {
+        id: "template-section-1",
+        heading: "Formatted Document",
+        headingRaw: "Formatted Document",
+        pageNumber: 1,
+        order: 1
+      },
+      {
+        id: "template-section-2",
+        heading: "Main Content",
+        headingRaw: "Main Content",
+        pageNumber: 1,
+        order: 2
+      },
+      {
+        id: "template-section-3",
+        heading: "Additional Details",
+        headingRaw: "Additional Details",
+        pageNumber: 1,
+        order: 3
+      }
+    ];
+  }
 
-  const unlocodeMatch =
-    clean.match(/UNLOCODE\s*[:/]*\s*([A-Z]{2}\s?[A-Z0-9]{3})/i) ||
-    clean.match(/UNCTAD\s*Code\s*[:/]*\s*([A-Z]{2}\s?[A-Z0-9]{3})/i);
-
-  const latLongMatch =
-    clean.match(/(\d{1,2}[°º]\s?\d{1,2}[.,]?\d*\s?[NS])\s+(\d{2,3}[°º]\s?\d{1,2}[.,]?\d*\s?[EW])/i);
-
-  const timeZoneMatch =
-    clean.match(/Time\s*Zone\s*[:\-]?\s*([A-Z]{2,5}\s*=?\s*GMT\s*[+\-]\s*\d+\.?\d*)/i) ||
-    clean.match(/\bGMT\s*[+\-]\s*\d+\.?\d*/i);
-
-  const cargoMatch =
-    clean.match(/CARGO\s*[:\-]?\s*([^.\n]{5,120})/i) ||
-    clean.match(/LOADING\s+([A-Z\s]+IN\s+BULK[^.\n]{0,80})/i);
-
-  const berthMatch =
-    clean.match(/(?:PIER|BERTH|TERMINAL)\s*[:\-]?\s*([^.\n]{3,100})/i);
-
-  const tidalMatch =
-    clean.match(/Tidal\s*Range\s*[:\-]?\s*([^.\n]{2,40})/i);
-
-  const densityMatch =
-    clean.match(/(?:Water\s*)?Density\s*[:\-]?\s*([0-9.]+\s*[-–]\s*[0-9.]+|[0-9.]+)/i);
-
-  const agentMatch =
-    clean.match(/AGENTS?\s*[:\-]?\s*([^.\n]{3,120})/i);
-
-  const portCountryFromFile = guessPortCountryFromFileName(fileName);
+  const title = inferDocumentTitle(templateData.fullText, templateData.fileName);
 
   return {
-    vesselName: cleanValue(vesselMatch?.[1]) || "Not Available",
-    portName: portCountryFromFile.port || "Not Available",
-    country: portCountryFromFile.country || "Not Available",
-    year: yearMatch?.[1] || "Not Available",
-    unlocode: cleanValue(unlocodeMatch?.[1]) || "Not Available",
-    position: latLongMatch ? `${latLongMatch[1]} ${latLongMatch[2]}` : "Not Available",
-    timeZone: cleanValue(timeZoneMatch?.[1] || timeZoneMatch?.[0]) || "Not Available",
-    portStayDate: detectDateRange(clean) || "Not Available",
-    berthTerminal: cleanValue(berthMatch?.[1]) || "Not Available",
-    cargo: cleanValue(cargoMatch?.[1]) || "Not Available",
-    cargoOperationsRate: "Not Available",
-    depthDraftChannel: detectDepthDraft(clean),
-    density: cleanValue(densityMatch?.[1]) || "Not Available",
-    tidalRange: cleanValue(tidalMatch?.[1]) || "Not Available",
-    securityLevel: detectSecurityLevel(clean),
-    vhfCommunication: detectVhf(clean),
-    agentContact: cleanValue(agentMatch?.[1]) || "Not Available",
-    publicationsCharts: detectPublications(clean)
+    title,
+    sections,
+    headingCount: sections.length,
+    sourceFileName: templateData.fileName
   };
 }
 
-function applyManualOverrides(detected) {
-  const manualCountry = els.defaultCountry.value.trim();
-  const manualPort = els.defaultPort.value.trim();
-  const manualVessel = els.defaultVessel.value.trim();
-  const manualYear = els.defaultYear.value.trim();
+function detectHeadings(fullText) {
+  const lines = fullText
+    .split("\n")
+    .map(line => normalizeLine(line))
+    .filter(Boolean)
+    .filter(line => !/^--- PAGE \d+ ---$/i.test(line));
 
-  return {
-    ...detected,
-    country: manualCountry || detected.country,
-    portName: manualPort || detected.portName,
-    vesselName: manualVessel || detected.vesselName,
-    year: manualYear || detected.year
-  };
-}
+  const headings = [];
 
-function mapTextToStandardSections(text) {
-  const clean = normalizeSpacing(text);
+  let currentPage = 1;
 
-  return {
-    portOverview: extractSection(clean, [
-      "Port Overview",
-      "About",
-      "GENERAL INFORMATION",
-      "PORT INFORMATION"
-    ]),
+  for (const rawLine of fullText.split("\n")) {
+    const line = normalizeLine(rawLine);
 
-    arrivalDetails: extractSection(clean, [
-      "Arrival",
-      "Port Stay",
-      "DATE OF ARRIVAL",
-      "ETA",
-      "ETB",
-      "ETD"
-    ]),
+    const pageMatch = line.match(/^--- PAGE (\d+) ---$/i);
+    if (pageMatch) {
+      currentPage = Number(pageMatch[1]);
+      continue;
+    }
 
-    anchorage: extractSection(clean, [
-      "ANCHORAGE",
-      "ANCHORAGES",
-      "ANCHORAGE AREA"
-    ]),
+    if (!line) continue;
 
-    pilotage: extractSection(clean, [
-      "PILOTAGE",
-      "APPROACHES",
-      "APPROACH",
-      "NAVIGATION"
-    ]),
-
-    berthTerminalDepth: extractSection(clean, [
-      "PIER",
-      "BERTH",
-      "TERMINAL",
-      "DEPTH",
-      "DRAFT",
-      "CHANNEL"
-    ]),
-
-    cargoOperations: extractSection(clean, [
-      "CARGO LOADING",
-      "CARGO OPERATIONS",
-      "LOADING",
-      "DISCHARGING",
-      "DISCHARGE"
-    ]),
-
-    agentsContacts: extractSection(clean, [
-      "AGENTS",
-      "CONTACTS",
-      "AGENT"
-    ]),
-
-    preArrivalDocuments: extractSection(clean, [
-      "PRE-ARRIVAL",
-      "DOCUMENTS",
-      "FORMALITIES",
-      "PART ONE",
-      "PART TWO"
-    ]),
-
-    regulationsSecurityHealth: extractSection(clean, [
-      "REGULATIONS",
-      "SECURITY",
-      "SANITARY",
-      "HEALTH",
-      "PSC",
-      "MARSEC",
-      "ISPS"
-    ]),
-
-    servicesSuppliesWaste: extractSection(clean, [
-      "GARBAGE",
-      "WASTE",
-      "FRESH WATER",
-      "BUNKERS",
-      "SLUDGE",
-      "PROVISIONS",
-      "STORES"
-    ]),
-
-    publicationsCharts: extractSection(clean, [
-      "PUBLICATIONS",
-      "CHARTS",
-      "NAUTICAL CHART"
-    ]),
-
-    operationalRemarks: extractSection(clean, [
-      "RELEVANT INFORMATIONS",
-      "RELEVANT INFORMATION",
-      "REMARKS",
-      "OPERATIONAL EXPERIENCE",
-      "SAFETY ON BOARD",
-      "GANGWAY",
-      "BALLAST",
-      "MOORING"
-    ]),
-
-    detailedNotes: clean || "Not Available"
-  };
-}
-
-function extractSection(text, keywords) {
-  const upperText = text.toUpperCase();
-
-  for (const keyword of keywords) {
-    const upperKeyword = keyword.toUpperCase();
-    const index = upperText.indexOf(upperKeyword);
-
-    if (index !== -1) {
-      const chunk = text.slice(index, index + 3000);
-      return trimSection(chunk);
+    if (isLikelyHeading(line)) {
+      headings.push({
+        text: line,
+        pageNumber: currentPage
+      });
     }
   }
 
-  return "Not Available";
+  return dedupeHeadings(headings);
 }
 
-function trimSection(text) {
-  return normalizeSpacing(text)
-    .replace(/--- PAGE \d+ ---/gi, "")
-    .trim();
+function isLikelyHeading(line) {
+  const text = normalizeLine(line);
+
+  if (!text) return false;
+  if (text.length < CONFIG.minHeadingLength) return false;
+  if (text.length > CONFIG.maxHeadingLength) return false;
+
+  if (/^page\s+\d+$/i.test(text)) return false;
+  if (/^[-=_]{3,}$/.test(text)) return false;
+  if (/https?:\/\//i.test(text)) return false;
+
+  /*
+    Strong heading patterns:
+    1. Heading
+    1.1 Heading
+    A. Heading
+    SECTION 1
+    CHAPTER 1
+  */
+  if (/^\d{1,2}(\.\d{1,2})?\s*[\).:-]?\s+[A-Z]/.test(text)) return true;
+  if (/^[A-Z]\.\s+[A-Z]/.test(text)) return true;
+  if (/^(SECTION|CHAPTER|PART|ARTICLE|APPENDIX)\s+[A-Z0-9]/i.test(text)) return true;
+
+  /*
+    All-caps headings, but avoid long paragraphs.
+  */
+  const lettersOnly = text.replace(/[^a-zA-Z]/g, "");
+  const upperLetters = text.replace(/[^A-Z]/g, "");
+
+  if (
+    lettersOnly.length >= 4 &&
+    upperLetters.length / lettersOnly.length > 0.75 &&
+    text.split(/\s+/).length <= 10
+  ) {
+    return true;
+  }
+
+  /*
+    Title Case short lines can be headings.
+  */
+  const words = text.split(/\s+/);
+  const titleCaseWords = words.filter(word => /^[A-Z][a-zA-Z0-9/&()-]*$/.test(word));
+
+  if (
+    words.length >= 2 &&
+    words.length <= 8 &&
+    titleCaseWords.length / words.length >= 0.65 &&
+    !/[.!?]$/.test(text)
+  ) {
+    return true;
+  }
+
+  return false;
 }
 
-function buildStandardizedOutput({ fileName, details, sections }) {
-  const titlePort = safeText(details.portName);
-  const titleCountry = safeText(details.country);
-  const vessel = safeText(details.vesselName);
-  const year = safeText(details.year);
+function dedupeHeadings(headings) {
+  const seen = new Set();
+  const result = [];
 
-  return `${titlePort}, ${titleCountry} Port Information | Standardized Format
-${vessel} | ${titlePort}, ${titleCountry} | ${year}
+  for (const heading of headings) {
+    const key = cleanHeading(heading.text).toLowerCase();
 
-PORT INFORMATION REPORT
-${titlePort}, ${titleCountry} - ${vessel}
+    if (!key || seen.has(key)) continue;
 
-Standardized layout. Missing fields are marked as Not Available.
-Source File: ${fileName}
+    seen.add(key);
+    result.push(heading);
+  }
 
-
-1. KEY INFORMATION
-
-Vessel Name: ${valueOrNA(details.vesselName)}
-Port Name: ${valueOrNA(details.portName)}
-Country: ${valueOrNA(details.country)}
-UNLOCODE / UNCTAD Code: ${valueOrNA(details.unlocode)}
-Latitude / Longitude / Position: ${valueOrNA(details.position)}
-Time Zone: ${valueOrNA(details.timeZone)}
-Port Stay / Date: ${valueOrNA(details.portStayDate)}
-Berth / Pier / Terminal: ${valueOrNA(details.berthTerminal)}
-Cargo: ${valueOrNA(details.cargo)}
-Cargo Operations / Rate: ${valueOrNA(details.cargoOperationsRate)}
-Depth / Draft / Channel: ${valueOrNA(details.depthDraftChannel)}
-Density: ${valueOrNA(details.density)}
-Tidal Range: ${valueOrNA(details.tidalRange)}
-Security Level: ${valueOrNA(details.securityLevel)}
-VHF / Communication: ${valueOrNA(details.vhfCommunication)}
-Agent / Contact: ${valueOrNA(details.agentContact)}
-Publications / Charts: ${valueOrNA(details.publicationsCharts)}
-
-
-2. VISUAL REFERENCES
-
-Visual references are preserved from the original uploaded source document as page snapshots in the exported PDF appendix.
-This is done to avoid missing maps, port diagrams, images, scanned tables, signatures, stamps, and layout-based information.
-
-
-3. PORT OVERVIEW / ABOUT
-
-${valueOrNA(sections.portOverview)}
-
-
-4. ARRIVAL / PORT STAY DETAILS
-
-${valueOrNA(sections.arrivalDetails)}
-
-
-5. ANCHORAGE
-
-${valueOrNA(sections.anchorage)}
-
-
-6. PILOTAGE / APPROACH / NAVIGATION
-
-${valueOrNA(sections.pilotage)}
-
-
-7. BERTH / TERMINAL / DEPTH
-
-${valueOrNA(sections.berthTerminalDepth)}
-
-
-8. CARGO OPERATIONS
-
-${valueOrNA(sections.cargoOperations)}
-
-
-9. AGENTS / CONTACTS
-
-${valueOrNA(sections.agentsContacts)}
-
-
-10. PRE-ARRIVAL DOCUMENTS / FORMALITIES
-
-${valueOrNA(sections.preArrivalDocuments)}
-
-
-11. REGULATIONS / SECURITY / HEALTH
-
-${valueOrNA(sections.regulationsSecurityHealth)}
-
-
-12. SERVICES / SUPPLIES / WASTE
-
-${valueOrNA(sections.servicesSuppliesWaste)}
-
-
-13. PUBLICATIONS / CHARTS
-
-${valueOrNA(sections.publicationsCharts)}
-
-
-14. OPERATIONAL EXPERIENCE / REMARKS
-
-${valueOrNA(sections.operationalRemarks)}
-
-
-15. DETAILED NOTES
-
-${valueOrNA(sections.detailedNotes)}
-
-
-SOURCE PRESERVATION NOTE
-
-The original PDF pages are included as visual page snapshots in the exported PDF appendix.
-This preserves images, diagrams, maps, scanned content, visual tables, and any information that may not be fully extractable as plain text.
-`;
+  return result;
 }
 
-function renderDetectedDetails(processedDocs) {
-  els.detectedDetails.textContent = processedDocs
-    .map((doc, index) => {
-      const d = doc.detected;
+function splitIntoSections(fullText) {
+  const lines = fullText
+    .split("\n")
+    .map(line => normalizeLine(line));
 
-      return `Document ${index + 1}: ${doc.sourceFileName}
+  const sections = [];
+  let current = {
+    heading: "Opening / General Content",
+    contentLines: [],
+    pageNumber: 1
+  };
 
-Vessel: ${d.vesselName}
-Port: ${d.portName}
-Country: ${d.country}
-Year: ${d.year}
-UNLOCODE: ${d.unlocode}
-Position: ${d.position}
-Time Zone: ${d.timeZone}
-Berth / Terminal: ${d.berthTerminal}
-Cargo: ${d.cargo}
-Pages Processed: ${doc.pageCount}
-Extracted Characters: ${doc.extractedCharacterCount}`;
-    })
-    .join("\n\n-----------------------------\n\n");
+  let currentPage = 1;
+
+  for (const line of lines) {
+    if (!line) {
+      current.contentLines.push("");
+      continue;
+    }
+
+    const pageMatch = line.match(/^--- PAGE (\d+) ---$/i);
+    if (pageMatch) {
+      currentPage = Number(pageMatch[1]);
+      continue;
+    }
+
+    if (isLikelyHeading(line)) {
+      if (current.contentLines.join("\n").trim()) {
+        sections.push({
+          heading: current.heading,
+          content: normalizeText(current.contentLines.join("\n")),
+          pageNumber: current.pageNumber
+        });
+      }
+
+      current = {
+        heading: cleanHeading(line),
+        contentLines: [],
+        pageNumber: currentPage
+      };
+    } else {
+      current.contentLines.push(line);
+    }
+  }
+
+  if (current.contentLines.join("\n").trim()) {
+    sections.push({
+      heading: current.heading,
+      content: normalizeText(current.contentLines.join("\n")),
+      pageNumber: current.pageNumber
+    });
+  }
+
+  if (!sections.length && normalizeText(fullText)) {
+    sections.push({
+      heading: "Main Content",
+      content: normalizeText(fullText),
+      pageNumber: 1
+    });
+  }
+
+  return mergeTinySections(sections);
+}
+
+/*
+  Some PDFs break text badly, causing too many small sections.
+  This merges tiny sections into the previous section to reduce damage.
+*/
+function mergeTinySections(sections) {
+  const result = [];
+
+  for (const section of sections) {
+    const contentLength = section.content.trim().length;
+
+    if (
+      result.length &&
+      contentLength < 80 &&
+      !/^\d{1,2}(\.\d{1,2})?\s+/.test(section.heading)
+    ) {
+      const previous = result[result.length - 1];
+      previous.content = normalizeText(
+        `${previous.content}\n\n${section.heading}\n${section.content}`
+      );
+    } else {
+      result.push({ ...section });
+    }
+  }
+
+  return result;
+}
+
+function mapSourceToTemplate({ templateSections, sourceSections }) {
+  const mappedSections = templateSections.map(templateSection => ({
+    templateHeading: templateSection.heading,
+    templateOrder: templateSection.order,
+    matchedSourceSections: [],
+    finalContent: "",
+    confidence: 0
+  }));
+
+  const usedSourceIndexes = new Set();
+
+  sourceSections.forEach((sourceSection, sourceIndex) => {
+    let bestMatchIndex = -1;
+    let bestScore = 0;
+
+    mappedSections.forEach((templateSection, templateIndex) => {
+      const score = calculateSectionSimilarity(
+        templateSection.templateHeading,
+        sourceSection.heading,
+        sourceSection.content
+      );
+
+      if (score > bestScore) {
+        bestScore = score;
+        bestMatchIndex = templateIndex;
+      }
+    });
+
+    if (bestMatchIndex !== -1 && bestScore >= CONFIG.mappingThreshold) {
+      mappedSections[bestMatchIndex].matchedSourceSections.push({
+        sourceIndex,
+        sourceHeading: sourceSection.heading,
+        sourcePageNumber: sourceSection.pageNumber,
+        content: sourceSection.content,
+        confidence: Number(bestScore.toFixed(3))
+      });
+
+      mappedSections[bestMatchIndex].confidence = Math.max(
+        mappedSections[bestMatchIndex].confidence,
+        Number(bestScore.toFixed(3))
+      );
+
+      usedSourceIndexes.add(sourceIndex);
+    }
+  });
+
+  mappedSections.forEach(section => {
+    if (!section.matchedSourceSections.length) {
+      section.finalContent = "Not Available";
+      return;
+    }
+
+    section.finalContent = section.matchedSourceSections
+      .map(match => {
+        return [
+          match.sourceHeading &&
+          match.sourceHeading !== "Opening / General Content"
+            ? `${match.sourceHeading}`
+            : "",
+          match.content
+        ]
+          .filter(Boolean)
+          .join("\n");
+      })
+      .join("\n\n");
+  });
+
+  const unmappedSections = sourceSections
+    .map((section, index) => ({
+      ...section,
+      sourceIndex: index
+    }))
+    .filter(section => !usedSourceIndexes.has(section.sourceIndex))
+    .filter(section => section.content && section.content.trim());
+
+  return {
+    mappedSections,
+    unmappedSections,
+    totalSourceSections: sourceSections.length,
+    mappedSourceSectionCount: usedSourceIndexes.size,
+    unmappedSourceSectionCount: unmappedSections.length
+  };
+}
+
+function calculateSectionSimilarity(templateHeading, sourceHeading, sourceContent) {
+  const templateTokens = tokenize(templateHeading);
+  const sourceHeadingTokens = tokenize(sourceHeading);
+  const sourceContentTokens = tokenize(sourceContent).slice(0, 80);
+
+  if (!templateTokens.length) return 0;
+
+  const headingScore = jaccardSimilarity(templateTokens, sourceHeadingTokens);
+  const contentScore = jaccardSimilarity(templateTokens, sourceContentTokens);
+
+  /*
+    Heading similarity is weighted higher than content similarity.
+  */
+  return headingScore * 0.75 + contentScore * 0.25;
+}
+
+function tokenize(text) {
+  const stopWords = new Set([
+    "the",
+    "and",
+    "or",
+    "of",
+    "to",
+    "in",
+    "for",
+    "on",
+    "by",
+    "with",
+    "from",
+    "as",
+    "at",
+    "is",
+    "are",
+    "was",
+    "were",
+    "this",
+    "that",
+    "these",
+    "those",
+    "a",
+    "an",
+    "details",
+    "information",
+    "section",
+    "document",
+    "report"
+  ]);
+
+  return normalizeLine(text)
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .split(/\s+/)
+    .filter(token => token.length > 2)
+    .filter(token => !stopWords.has(token));
+}
+
+function jaccardSimilarity(tokensA, tokensB) {
+  if (!tokensA.length || !tokensB.length) return 0;
+
+  const setA = new Set(tokensA);
+  const setB = new Set(tokensB);
+
+  let intersection = 0;
+
+  for (const token of setA) {
+    if (setB.has(token)) intersection++;
+  }
+
+  const union = new Set([...setA, ...setB]).size;
+
+  return union ? intersection / union : 0;
+}
+
+function buildTemplateBasedOutput({
+  templateData,
+  templateStructure,
+  sourceData,
+  mappedResult
+}) {
+  const title = inferDocumentTitleFromSourceOrTemplate({
+    sourceData,
+    templateStructure
+  });
+
+  const lines = [];
+
+  lines.push(title);
+  lines.push("");
+  lines.push("Template-Based Standardized Document");
+  lines.push("");
+  lines.push(`Template Used: ${templateData.fileName}`);
+  lines.push(`Source File: ${sourceData.fileName}`);
+  lines.push(`Generated On: ${new Date().toLocaleString()}`);
+  lines.push("");
+  lines.push("Important Preservation Note:");
+  lines.push(
+    "No source content is intentionally removed. Content that cannot be confidently mapped into the template is placed under 'Unmapped / Additional Source Content'. Original source pages are also preserved as visual snapshots in the exported PDF appendix."
+  );
+  lines.push("");
+
+  mappedResult.mappedSections.forEach((section, index) => {
+    const heading = section.templateHeading || `Section ${index + 1}`;
+
+    lines.push(`${index + 1}. ${heading}`);
+    lines.push("");
+    lines.push(section.finalContent || "Not Available");
+    lines.push("");
+  });
+
+  lines.push(`${mappedResult.mappedSections.length + 1}. Unmapped / Additional Source Content`);
+  lines.push("");
+
+  if (mappedResult.unmappedSections.length) {
+    mappedResult.unmappedSections.forEach((section, index) => {
+      lines.push(`Unmapped Item ${index + 1}: ${section.heading}`);
+      lines.push(`Source Page: ${section.pageNumber || "Unknown"}`);
+      lines.push("");
+      lines.push(section.content);
+      lines.push("");
+    });
+  } else {
+    lines.push("No unmapped content detected.");
+    lines.push("");
+  }
+
+  lines.push(`${mappedResult.mappedSections.length + 2}. Source Preservation Appendix`);
+  lines.push("");
+  lines.push(
+    "Original source page snapshots are included after the formatted text in the exported PDF."
+  );
+
+  return normalizeText(lines.join("\n"));
+}
+
+function inferDocumentTitleFromSourceOrTemplate({ sourceData, templateStructure }) {
+  const sourceTitle = inferDocumentTitle(sourceData.fullText, sourceData.fileName);
+
+  if (sourceTitle && sourceTitle !== "Formatted Document") {
+    return sourceTitle;
+  }
+
+  return templateStructure.title || "Formatted Document";
+}
+
+function inferDocumentTitle(fullText, fileName) {
+  const lines = fullText
+    .split("\n")
+    .map(line => normalizeLine(line))
+    .filter(Boolean)
+    .filter(line => !/^--- PAGE \d+ ---$/i.test(line));
+
+  const firstStrongLine = lines.find(line => {
+    if (line.length < 4 || line.length > 120) return false;
+    if (/^page\s+\d+/i.test(line)) return false;
+    return isLikelyHeading(line) || /^[A-Z][A-Za-z0-9 ,/&()-]+$/.test(line);
+  });
+
+  if (firstStrongLine) return cleanHeading(firstStrongLine);
+
+  return fileName
+    ? fileName.replace(/\.pdf$/i, "").replace(/[_-]+/g, " ")
+    : "Formatted Document";
+}
+
+function renderDetectedDetails({ templateData, templateStructure, processedDocs }) {
+  const details = [];
+
+  details.push(`Template File: ${templateData.fileName}`);
+  details.push(`Template Pages: ${templateData.pageCount}`);
+  details.push(`Detected Template Sections: ${templateStructure.sections.length}`);
+  details.push("");
+
+  templateStructure.sections.forEach(section => {
+    details.push(`${section.order}. ${section.heading}`);
+  });
+
+  details.push("");
+  details.push("-----------------------------");
+  details.push("");
+
+  processedDocs.forEach((doc, index) => {
+    details.push(`Source Document ${index + 1}: ${doc.sourceFileName}`);
+    details.push(`Pages: ${doc.sourceData.pageCount}`);
+    details.push(`Extracted Characters: ${doc.sourceData.fullText.length}`);
+    details.push(`Source Sections Detected: ${doc.sourceSections.length}`);
+    details.push(`Mapped Sections: ${doc.mappedResult.mappedSourceSectionCount}`);
+    details.push(`Unmapped Sections: ${doc.mappedResult.unmappedSourceSectionCount}`);
+    details.push("");
+
+    doc.mappedResult.mappedSections.forEach(section => {
+      details.push(
+        `- ${section.templateHeading}: ${
+          section.matchedSourceSections.length
+            ? `Mapped (${section.matchedSourceSections.length}, confidence ${section.confidence})`
+            : "Not Available"
+        }`
+      );
+    });
+
+    details.push("");
+    details.push("-----------------------------");
+    details.push("");
+  });
+
+  els.detectedDetails.textContent = details.join("\n");
 }
 
 function renderSnapshots(processedDocs) {
@@ -611,25 +943,21 @@ async function exportFormattedPdf() {
     const margin = 42;
     const contentWidth = pageSize.width - margin * 2;
 
-    for (let docIndex = 0; docIndex < state.processedDocs.length; docIndex++) {
-      const doc = state.processedDocs[docIndex];
+    const previewText = els.formattedPreview.value || state.combinedOutput;
 
-      if (docIndex > 0) {
-        addDividerPage(pdfDoc, pageSize, boldFont, `Document ${docIndex + 1}`);
-      }
+    addFormattedTextPages({
+      pdfDoc,
+      text: previewText,
+      pageSize,
+      margin,
+      contentWidth,
+      regularFont,
+      boldFont,
+      italicFont,
+      footer: "Template-Based Formatted Document"
+    });
 
-      addFormattedTextPages({
-        pdfDoc,
-        text: getCurrentTextForDoc(docIndex),
-        pageSize,
-        margin,
-        contentWidth,
-        regularFont,
-        boldFont,
-        italicFont,
-        footer: `${doc.detected.vesselName} | ${doc.detected.portName}, ${doc.detected.country} | ${doc.detected.year}`
-      });
-
+    for (const doc of state.processedDocs) {
       await addSnapshotAppendix({
         pdfDoc,
         snapshots: doc.snapshots,
@@ -637,17 +965,16 @@ async function exportFormattedPdf() {
         margin,
         regularFont,
         boldFont,
-        title: `Original Source Page Snapshots - ${doc.sourceFileName}`
+        title: `Original Source Snapshots - ${doc.sourceFileName}`
       });
     }
 
     const bytes = await pdfDoc.save();
-    const firstDoc = state.processedDocs[0];
 
     const outputFileName =
       state.processedDocs.length === 1
-        ? buildStandardFileName(firstDoc.detected)
-        : "Formatted_Port_Information_Combined.pdf";
+        ? buildGenericOutputFileName(state.processedDocs[0].sourceFileName)
+        : "Template_Based_Formatted_Documents.pdf";
 
     downloadBlob(bytes, outputFileName, "application/pdf");
 
@@ -656,14 +983,6 @@ async function exportFormattedPdf() {
     console.error(error);
     setStatus(`Failed to export formatted PDF: ${error.message}`, "error");
   }
-}
-
-function getCurrentTextForDoc(docIndex) {
-  if (state.processedDocs.length === 1) {
-    return els.formattedPreview.value;
-  }
-
-  return state.processedDocs[docIndex].formattedText;
 }
 
 function addFormattedTextPages({
@@ -680,8 +999,8 @@ function addFormattedTextPages({
   let page = pdfDoc.addPage([pageSize.width, pageSize.height]);
   let y = pageSize.height - margin;
 
-  drawHeader(page, {
-    title: "PORT INFORMATION REPORT",
+  drawDocumentHeader(page, {
+    title: "FORMATTED DOCUMENT",
     font: boldFont,
     pageSize,
     margin
@@ -700,13 +1019,13 @@ function addFormattedTextPages({
     }
 
     if (y < margin + 48) {
-      drawFooter(page, footer, regularFont, pageSize, margin);
+      drawDocumentFooter(page, footer, regularFont, pageSize, margin);
 
       page = pdfDoc.addPage([pageSize.width, pageSize.height]);
       y = pageSize.height - margin;
 
-      drawHeader(page, {
-        title: "PORT INFORMATION REPORT",
+      drawDocumentHeader(page, {
+        title: "FORMATTED DOCUMENT",
         font: boldFont,
         pageSize,
         margin
@@ -715,30 +1034,36 @@ function addFormattedTextPages({
       y -= 48;
     }
 
-    const headingLevel = getHeadingLevel(trimmed);
+    const level = getTextLineLevel(trimmed);
 
     let selectedFont = regularFont;
     let fontSize = 9.5;
     let color = rgb(0.1, 0.12, 0.16);
 
-    if (headingLevel === 1) {
+    if (level === 1) {
       selectedFont = boldFont;
-      fontSize = 16;
+      fontSize = 15;
       color = rgb(0.13, 0.31, 0.43);
       y -= 4;
-    } else if (headingLevel === 2) {
+    } else if (level === 2) {
       selectedFont = boldFont;
-      fontSize = 12.5;
+      fontSize = 12;
       color = rgb(0.13, 0.31, 0.43);
       y -= 4;
-      drawSectionLine(page, margin, y - 4, contentWidth);
-    } else if (headingLevel === 3) {
+
+      page.drawLine({
+        start: { x: margin, y: y - 5 },
+        end: { x: margin + contentWidth, y: y - 5 },
+        thickness: 0.6,
+        color: rgb(0.55, 0.7, 0.8)
+      });
+    } else if (level === 3) {
       selectedFont = italicFont;
-      fontSize = 10;
+      fontSize = 9.5;
       color = rgb(0.35, 0.4, 0.48);
     }
 
-    page.drawText(trimmed, {
+    safeDrawText(page, trimmed, {
       x: margin,
       y,
       size: fontSize,
@@ -746,65 +1071,10 @@ function addFormattedTextPages({
       color
     });
 
-    y -= headingLevel ? 18 : 13;
+    y -= level ? 18 : 13;
   }
 
-  drawFooter(page, footer, regularFont, pageSize, margin);
-}
-
-function addDividerPage(pdfDoc, pageSize, boldFont, text) {
-  const page = pdfDoc.addPage([pageSize.width, pageSize.height]);
-
-  page.drawText(text, {
-    x: 72,
-    y: pageSize.height / 2,
-    size: 22,
-    font: boldFont,
-    color: rgb(0.13, 0.31, 0.43)
-  });
-}
-
-function drawHeader(page, { title, font, pageSize, margin }) {
-  page.drawText(title, {
-    x: margin,
-    y: pageSize.height - 34,
-    size: 15,
-    font,
-    color: rgb(0.13, 0.31, 0.43)
-  });
-
-  page.drawLine({
-    start: { x: margin, y: pageSize.height - 42 },
-    end: { x: pageSize.width - margin, y: pageSize.height - 42 },
-    thickness: 1,
-    color: rgb(0.45, 0.66, 0.78)
-  });
-}
-
-function drawFooter(page, footer, font, pageSize, margin) {
-  page.drawLine({
-    start: { x: margin, y: 32 },
-    end: { x: pageSize.width - margin, y: 32 },
-    thickness: 0.5,
-    color: rgb(0.85, 0.9, 0.94)
-  });
-
-  page.drawText(footer || "", {
-    x: margin,
-    y: 18,
-    size: 8,
-    font,
-    color: rgb(0.45, 0.45, 0.45)
-  });
-}
-
-function drawSectionLine(page, x, y, width) {
-  page.drawLine({
-    start: { x, y },
-    end: { x: x + width, y },
-    thickness: 0.7,
-    color: rgb(0.45, 0.66, 0.78)
-  });
+  drawDocumentFooter(page, footer, regularFont, pageSize, margin);
 }
 
 async function addSnapshotAppendix({
@@ -816,33 +1086,36 @@ async function addSnapshotAppendix({
   boldFont,
   title
 }) {
-  if (!snapshots.length) return;
+  if (!snapshots?.length) return;
 
   const cover = pdfDoc.addPage([pageSize.width, pageSize.height]);
 
-  cover.drawText(title, {
+  cover.drawText(title.substring(0, 90), {
     x: margin,
     y: pageSize.height - margin,
-    size: 16,
+    size: 15,
     font: boldFont,
     color: rgb(0.13, 0.31, 0.43)
   });
 
   cover.drawText("The following pages preserve the original visual source document.", {
     x: margin,
-    y: pageSize.height - margin - 26,
+    y: pageSize.height - margin - 28,
     size: 10,
     font: regularFont,
     color: rgb(0.35, 0.4, 0.48)
   });
 
-  cover.drawText("This helps avoid loss of images, maps, scanned sections, signatures, stamps, and complex tables.", {
-    x: margin,
-    y: pageSize.height - margin - 42,
-    size: 10,
-    font: regularFont,
-    color: rgb(0.35, 0.4, 0.48)
-  });
+  cover.drawText(
+    "This protects images, diagrams, scanned sections, signatures, stamps, and complex tables.",
+    {
+      x: margin,
+      y: pageSize.height - margin - 44,
+      size: 10,
+      font: regularFont,
+      color: rgb(0.35, 0.4, 0.48)
+    }
+  );
 
   for (const snapshot of snapshots) {
     const page = pdfDoc.addPage([pageSize.width, pageSize.height]);
@@ -858,7 +1131,7 @@ async function addSnapshotAppendix({
     const image = await pdfDoc.embedPng(snapshot.imageDataUrl);
 
     const maxWidth = pageSize.width - margin * 2;
-    const maxHeight = pageSize.height - margin * 2 - 30;
+    const maxHeight = pageSize.height - margin * 2 - 34;
 
     const scale = Math.min(maxWidth / image.width, maxHeight / image.height);
 
@@ -872,6 +1145,55 @@ async function addSnapshotAppendix({
       height: imgHeight
     });
   }
+}
+
+function drawDocumentHeader(page, { title, font, pageSize, margin }) {
+  page.drawText(title, {
+    x: margin,
+    y: pageSize.height - 34,
+    size: 14,
+    font,
+    color: rgb(0.13, 0.31, 0.43)
+  });
+
+  page.drawLine({
+    start: { x: margin, y: pageSize.height - 42 },
+    end: { x: pageSize.width - margin, y: pageSize.height - 42 },
+    thickness: 1,
+    color: rgb(0.55, 0.7, 0.8)
+  });
+}
+
+function drawDocumentFooter(page, footer, font, pageSize, margin) {
+  page.drawLine({
+    start: { x: margin, y: 32 },
+    end: { x: pageSize.width - margin, y: 32 },
+    thickness: 0.5,
+    color: rgb(0.85, 0.9, 0.94)
+  });
+
+  safeDrawText(page, footer || "", {
+    x: margin,
+    y: 18,
+    size: 8,
+    font,
+    color: rgb(0.45, 0.45, 0.45)
+  });
+}
+
+/*
+  pdf-lib's standard fonts can fail on some special Unicode characters.
+  This sanitizes text before drawing.
+*/
+function safeDrawText(page, text, options) {
+  const cleaned = String(text || "")
+    .replace(/[•]/g, "-")
+    .replace(/[–—]/g, "-")
+    .replace(/[“”]/g, '"')
+    .replace(/[‘’]/g, "'")
+    .replace(/[^\x00-\x7F]/g, "");
+
+  page.drawText(cleaned, options);
 }
 
 function exportAuditLog() {
@@ -890,53 +1212,67 @@ function exportAuditLog() {
     type: "application/json"
   });
 
-  downloadBlob(blob, "PDF_Modifier_Audit_Log.json", "application/json");
+  downloadBlob(blob, "Template_Based_PDF_Audit_Log.json", "application/json");
 
   setStatus("Audit log exported successfully.", "success");
 }
 
-function buildAuditLog(templateData, processedDocs) {
+function buildAuditLog({ templateData, templateStructure, processedDocs }) {
   return {
     generatedAt: new Date().toISOString(),
-    purpose:
-      "PDF source documents converted into standardized port information format using uploaded template as reference.",
+    mode: "Generic template-based formatter",
+    safetyRule:
+      "Content that could not be confidently mapped to a template section is retained under Unmapped / Additional Source Content.",
     template: {
-      fileName: state.templateFile.name,
+      fileName: templateData.fileName,
       pageCount: templateData.pageCount,
       extractedCharacterCount: templateData.fullText.length,
-      note:
-        "Template is used as formatting reference. Current MVP uses a fixed Santos-style structure rather than fully learning layout automatically."
+      detectedHeadingCount: templateStructure.sections.length,
+      detectedHeadings: templateStructure.sections.map(section => ({
+        order: section.order,
+        heading: section.heading,
+        pageNumber: section.pageNumber
+      }))
     },
     sourceDocuments: processedDocs.map(doc => ({
       sourceFileName: doc.sourceFileName,
-      pageCount: doc.pageCount,
-      extractedCharacterCount: doc.extractedCharacterCount,
-      detectedFields: doc.detected,
-      sectionsMapped: Object.fromEntries(
-        Object.entries(doc.sections).map(([key, value]) => [
-          key,
-          value && value !== "Not Available"
-            ? `Mapped - ${value.length} characters`
-            : "Not Available"
-        ])
-      ),
+      pageCount: doc.sourceData.pageCount,
+      extractedCharacterCount: doc.sourceData.fullText.length,
+      detectedSourceSectionCount: doc.sourceSections.length,
+      mappedSourceSectionCount: doc.mappedResult.mappedSourceSectionCount,
+      unmappedSourceSectionCount: doc.mappedResult.unmappedSourceSectionCount,
+      mappedSections: doc.mappedResult.mappedSections.map(section => ({
+        templateHeading: section.templateHeading,
+        confidence: section.confidence,
+        matchedSourceSections: section.matchedSourceSections.map(match => ({
+          sourceHeading: match.sourceHeading,
+          sourcePageNumber: match.sourcePageNumber,
+          confidence: match.confidence,
+          characterCount: match.content.length
+        }))
+      })),
+      unmappedSections: doc.mappedResult.unmappedSections.map(section => ({
+        heading: section.heading,
+        pageNumber: section.pageNumber,
+        characterCount: section.content.length
+      })),
       preservationMethod:
-        "Original pages rendered as visual snapshots and attached in exported PDF appendix."
+        "Original source PDF pages are rendered as visual page snapshots and attached to the exported PDF."
     })),
     limitations: [
-      "This browser-only MVP extracts readable PDF text using PDF.js.",
-      "Scanned image-only PDFs may require OCR, which is not included in this version.",
-      "Individual embedded images are not separately extracted and repositioned.",
-      "Visual content is preserved through full-page snapshots.",
-      "Final output should be reviewed before business use."
+      "This is a browser-based tool and does not use AI reasoning.",
+      "It extracts readable PDF text using PDF.js.",
+      "Image-only scanned PDFs require OCR, which is not included in this version.",
+      "The sample/template PDF is used for structure detection, not perfect visual cloning.",
+      "Images and complex layouts are preserved through original page snapshots.",
+      "Final output should be reviewed before official/business use."
     ]
   };
 }
 
 function prepareTextLines(text, maxCharsPerLine) {
   const result = [];
-
-  const rawLines = text.split("\n");
+  const rawLines = String(text || "").split("\n");
 
   for (const rawLine of rawLines) {
     const line = rawLine.trim();
@@ -946,15 +1282,14 @@ function prepareTextLines(text, maxCharsPerLine) {
       continue;
     }
 
-    const wrapped = wrapText(line, maxCharsPerLine);
-    result.push(...wrapped);
+    result.push(...wrapText(line, maxCharsPerLine));
   }
 
   return result;
 }
 
 function wrapText(text, maxChars) {
-  const words = text.split(/\s+/);
+  const words = String(text || "").split(/\s+/);
   const lines = [];
   let line = "";
 
@@ -974,16 +1309,23 @@ function wrapText(text, maxChars) {
   return lines;
 }
 
-function getHeadingLevel(line) {
-  if (line === "PORT INFORMATION REPORT") return 1;
-
-  if (/^\d+\.\s+[A-Z0-9 /&()-]+$/.test(line)) return 2;
+function getTextLineLevel(line) {
+  if (!line) return 0;
 
   if (
-    [
-      "SOURCE PRESERVATION NOTE",
-      "Standardized layout. Missing fields are marked as Not Available."
-    ].includes(line)
+    line.length <= 100 &&
+    /^[A-Z0-9 ,/&()-]+$/.test(line) &&
+    line.split(/\s+/).length <= 10
+  ) {
+    return 1;
+  }
+
+  if (/^\d{1,2}\.\s+/.test(line)) return 2;
+
+  if (
+    /^(Template Used|Source File|Generated On|Important Preservation Note|Source Page):/i.test(
+      line
+    )
   ) {
     return 3;
   }
@@ -991,146 +1333,14 @@ function getHeadingLevel(line) {
   return 0;
 }
 
-function guessPortCountryFromFileName(fileName) {
-  const base = fileName
+function buildGenericOutputFileName(sourceFileName) {
+  const base = sourceFileName
     .replace(/\.pdf$/i, "")
-    .replace(/[_-]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+    .replace(/[^a-z0-9]+/gi, "_")
+    .replace(/^_+|_+$/g, "")
+    .substring(0, 90);
 
-  const knownCountries = [
-    "Brazil",
-    "India",
-    "USA",
-    "United States",
-    "Singapore",
-    "China",
-    "Japan",
-    "Korea",
-    "Vietnam",
-    "Indonesia",
-    "Malaysia",
-    "Philippines",
-    "Thailand",
-    "UAE",
-    "Saudi Arabia",
-    "Qatar",
-    "Oman",
-    "South Africa",
-    "Australia",
-    "Canada",
-    "Mexico",
-    "Netherlands",
-    "Germany",
-    "Belgium",
-    "Spain",
-    "Italy",
-    "France"
-  ];
-
-  let country = "";
-
-  for (const c of knownCountries) {
-    const regex = new RegExp(`\\b${escapeRegex(c)}\\b`, "i");
-    if (regex.test(base)) {
-      country = c === "United States" ? "USA" : c;
-      break;
-    }
-  }
-
-  let port = "";
-
-  const words = base.split(" ");
-
-  if (country) {
-    const countryIndex = words.findIndex(
-      w => w.toLowerCase() === country.toLowerCase()
-    );
-
-    if (countryIndex > 0) {
-      port = words[countryIndex - 1];
-    }
-  }
-
-  const portInfoMatch = base.match(/(.+?)\s+Port\s+Information/i);
-
-  if (portInfoMatch) {
-    const before = portInfoMatch[1]
-      .replace(/\bCS\s+[A-Z0-9-]+\b/gi, "")
-      .replace(/\bMV\s+[A-Z0-9-]+\b/gi, "")
-      .replace(/\b20[0-9]{2}\b/g, "")
-      .trim();
-
-    if (before) {
-      const parts = before.split(" ");
-      port = parts[0];
-    }
-  }
-
-  return {
-    port: titleCase(port || ""),
-    country: titleCase(country || "")
-  };
-}
-
-function detectDateRange(text) {
-  const patterns = [
-    /\b\d{1,2}(?:ST|ND|RD|TH)?\s+[A-Z]{3,9}\s+\d{2,4}\s+TO\s+\d{1,2}(?:ST|ND|RD|TH)?\s+[A-Z]{3,9}\s+\d{2,4}\b/i,
-    /\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\s*(?:TO|-|–)\s*\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b/i,
-    /\b(?:JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|SEPT|OCT|NOV|DEC)[A-Z]*\s+20[0-9]{2}\b/i
-  ];
-
-  for (const pattern of patterns) {
-    const match = text.match(pattern);
-    if (match) return cleanValue(match[0]);
-  }
-
-  return "";
-}
-
-function detectDepthDraft(text) {
-  const depthMatch =
-    text.match(/BERTH\s+DEPTH\s*[:\-]?\s*([^.\n]{2,60})/i) ||
-    text.match(/DEPTH\s*[:\-]?\s*([^.\n]{2,60})/i) ||
-    text.match(/DRAFT\s*[:\-]?\s*([^.\n]{2,60})/i) ||
-    text.match(/CHANNEL\s*[:\-]?\s*([^.\n]{2,60})/i);
-
-  return cleanValue(depthMatch?.[1]) || "Not Available";
-}
-
-function detectSecurityLevel(text) {
-  const marsecMatch = text.match(/MARSEC\s+LEVEL\s*[–-]?\s*([0-9])/i);
-  if (marsecMatch) return `MARSEC Level ${marsecMatch[1]}`;
-
-  const securityMatch = text.match(/Security\s+Level\s*[:\-]?\s*([0-9])/i);
-  if (securityMatch) return `Security Level ${securityMatch[1]}`;
-
-  return "Not Available";
-}
-
-function detectVhf(text) {
-  const vhfMatch =
-    text.match(/VHF\s*(?:CH|CHANNEL)?\s*[:\-]?\s*([0-9 /\-&]+){1,40}/i) ||
-    text.match(/channels?\s+([0-9]{1,2}\s*(?:&|\/|and)\s*[0-9]{1,2})/i);
-
-  return cleanValue(vhfMatch?.[0]) || "Not Available";
-}
-
-function detectPublications(text) {
-  const chartMatch =
-    text.match(/Nautical\s+Chart\s*(?:No\.?|Number)?\s*[:\-]?\s*([A-Z0-9/.\- ]+)/i) ||
-    text.match(/Chart\s*(?:No\.?|Number)?\s*[:\-]?\s*([A-Z0-9/.\- ]+)/i);
-
-  return cleanValue(chartMatch?.[0]) || "Not Available";
-}
-
-function buildStandardFileName(details) {
-  const port = safeFilePart(details.portName);
-  const country = safeFilePart(details.country);
-  const vessel = safeFilePart(details.vesselName);
-  const year = safeFilePart(details.year);
-
-  return `${port}_${country}_${vessel}_${year}_Port_Information.pdf`;
+  return `${base}_Formatted.pdf`;
 }
 
 function downloadBlob(data, fileName, mimeType) {
@@ -1150,6 +1360,8 @@ function downloadBlob(data, fileName, mimeType) {
 }
 
 function setStatus(message, type = "") {
+  if (!els.statusText || !els.statusPanel) return;
+
   els.statusText.textContent = message;
 
   els.statusPanel.classList.remove("success", "error");
@@ -1161,6 +1373,8 @@ function setStatus(message, type = "") {
 function resetTool() {
   state.templateFile = null;
   state.sourceFiles = [];
+  state.templateData = null;
+  state.templateStructure = null;
   state.processedDocs = [];
   state.combinedOutput = "";
   state.auditLog = null;
@@ -1171,10 +1385,10 @@ function resetTool() {
   els.templateFileInfo.textContent = "No template uploaded yet.";
   els.sourceFileInfo.textContent = "No source documents uploaded yet.";
 
-  els.defaultCountry.value = "";
-  els.defaultPort.value = "";
-  els.defaultVessel.value = "";
-  els.defaultYear.value = "";
+  if (els.defaultCountry) els.defaultCountry.value = "";
+  if (els.defaultPort) els.defaultPort.value = "";
+  if (els.defaultVessel) els.defaultVessel.value = "";
+  if (els.defaultYear) els.defaultYear.value = "";
 
   resetOutputOnly();
 
@@ -1194,7 +1408,7 @@ function resetOutputOnly() {
   state.auditLog = null;
 }
 
-function normalizeSpacing(text) {
+function normalizeText(text) {
   return String(text || "")
     .replace(/\r/g, "")
     .replace(/[ \t]+/g, " ")
@@ -1202,48 +1416,22 @@ function normalizeSpacing(text) {
     .trim();
 }
 
-function cleanValue(value) {
-  if (!value) return "";
-
-  return normalizeSpacing(value)
-    .replace(/^[:\-–]+/, "")
-    .replace(/\s+/g, " ")
+function normalizeLine(text) {
+  return String(text || "")
+    .replace(/\r/g, "")
+    .replace(/[ \t]+/g, " ")
     .trim();
 }
 
-function valueOrNA(value) {
-  const cleaned = cleanValue(value);
-
-  if (!cleaned || cleaned.toLowerCase() === "undefined") {
-    return "Not Available";
-  }
-
-  return cleaned;
-}
-
-function safeText(value) {
-  return valueOrNA(value);
-}
-
-function safeFilePart(value) {
-  return valueOrNA(value)
-    .replace(/[^a-z0-9]+/gi, "_")
-    .replace(/^_+|_+$/g, "")
-    .substring(0, 80);
-}
-
-function titleCase(value) {
-  return String(value || "")
-    .toLowerCase()
-    .replace(/\b\w/g, char => char.toUpperCase());
-}
-
-function escapeRegex(value) {
-  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+function cleanHeading(text) {
+  return normalizeLine(text)
+    .replace(/^[-–—•\s]+/, "")
+    .replace(/[:\-–—]+$/, "")
+    .trim();
 }
 
 function escapeHtml(value) {
-  return String(value)
+  return String(value || "")
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
