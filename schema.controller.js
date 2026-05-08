@@ -3,7 +3,7 @@
 import { db, doc, getDoc } from "./firebase.client.js";
 
 const FALLBACK_TEMPLATE_CONTROLLER = {
-  schemaId: "EKsLu4CtBolKNKDssJNe",
+  schemaId: "generic_template_alignment",
   schemaName: "Generic Template Alignment - Local Fallback",
   active: true,
   version: 1,
