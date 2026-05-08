@@ -3,50 +3,143 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
   <title>PDF Modifier Demo Tool</title>
+
   <link rel="stylesheet" href="style.css" />
+
+  <!-- PDF-LIB for generating the final formatted PDF -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
 </head>
+
 <body>
   <div class="app">
     <header class="topbar">
-      <h1>PDF Modifier Demo Tool</h1>
-      <p>PDF Modifier and Clean Formatt Tool</p>
+      <div>
+        <h1>PDF Modifier Demo Tool</h1>
+        <p>Upload a sample PDF template and convert source PDFs into the same standardized format.</p>
+      </div>
     </header>
+
+    <section class="upload-grid">
+      <div class="upload-card">
+        <h2>1. Upload Sample Template PDF</h2>
+        <p class="hint">
+          Upload the clean formatted reference PDF, for example the Santos Brazil CS CALLA format.
+        </p>
+
+        <input
+          type="file"
+          id="templatePdfInput"
+          accept="application/pdf"
+        />
+
+        <div class="file-info" id="templateFileInfo">
+          No template uploaded yet.
+        </div>
+      </div>
+
+      <div class="upload-card">
+        <h2>2. Upload Source PDF(s)</h2>
+        <p class="hint">
+          Upload one or more port information PDFs that need to be reformatted.
+        </p>
+
+        <input
+          type="file"
+          id="sourcePdfInput"
+          accept="application/pdf"
+          multiple
+        />
+
+        <div class="file-info" id="sourceFileInfo">
+          No source documents uploaded yet.
+        </div>
+      </div>
+    </section>
 
     <section class="controls">
       <div class="control-group">
-        <label for="pageInput">Page Number</label>
-        <input type="number" id="pageInput" value="2" min="1" />
-      </div>
-
-      <div class="control-group text-group">
-        <label for="highlightInput">Text to Highlight</label>
+        <label for="defaultCountry">Default Country</label>
         <input
           type="text"
-          id="highlightInput"
-          value="BERTH DEPTH: 13.2 mtrs"
+          id="defaultCountry"
+          placeholder="Example: Brazil, USA, India"
         />
       </div>
 
-      <button id="loadBtn">Load PDF</button>
+      <div class="control-group">
+        <label for="defaultPort">Default Port</label>
+        <input
+          type="text"
+          id="defaultPort"
+          placeholder="Example: Santos, New Orleans, Kandla"
+        />
+      </div>
+
+      <div class="control-group">
+        <label for="defaultVessel">Default Vessel</label>
+        <input
+          type="text"
+          id="defaultVessel"
+          placeholder="Example: CS CALLA"
+        />
+      </div>
+
+      <div class="control-group">
+        <label for="defaultYear">Default Year</label>
+        <input
+          type="text"
+          id="defaultYear"
+          placeholder="Example: 2025"
+        />
+      </div>
     </section>
 
-    <section class="viewer-wrapper">
+    <section class="action-bar">
+      <button id="processBtn">Process & Format PDF(s)</button>
+      <button id="exportPdfBtn" disabled>Export Formatted PDF</button>
+      <button id="exportAuditBtn" disabled>Export Audit Log</button>
+      <button id="resetBtn" class="secondary">Reset</button>
+    </section>
+
+    <section class="status-panel">
+      <strong>Status:</strong>
+      <span id="statusText">Waiting for upload.</span>
+    </section>
+
+    <section class="workspace">
       <aside class="side-panel">
-        <h2>Reference</h2>
-        <p><strong>File:</strong> sample.pdf</p>
-        <p><strong>Status:</strong> <span id="status">Waiting to load</span></p>
-        <p><strong>Target Text:</strong></p>
-        <div id="targetTextBox" class="target-box">BERTH DEPTH: 13.2 mtrs</div>
+        <h2>Detected Details</h2>
+
+        <div id="detectedDetails" class="detected-box">
+          No document processed yet.
+        </div>
+
+        <h2>Source Page Snapshots</h2>
+        <p class="hint">
+          These are preserved so images, maps, diagrams, stamps, tables, and visual information are not lost.
+        </p>
+
+        <div id="snapshotList" class="snapshot-list"></div>
       </aside>
 
-      <main class="viewer-panel">
-        <div id="pdf-container"></div>
+      <main class="editor-panel">
+        <div class="editor-header">
+          <h2>Formatted Output Preview</h2>
+          <p>
+            Review and edit this content before exporting the final PDF.
+          </p>
+        </div>
+
+        <textarea
+          id="formattedPreview"
+          placeholder="Formatted output will appear here after processing..."
+        ></textarea>
       </main>
     </section>
   </div>
 
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.4.168/pdf.min.mjs" type="module"></script>
   <script src="script.js" type="module"></script>
 </body>
 </html>
