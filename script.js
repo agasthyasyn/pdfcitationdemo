@@ -63,7 +63,8 @@ const state = {
   sourceFiles: [],
   templateProfile: null,
   documents: [],
-  auditLog: null
+  auditLog: null,
+  templateController: null
 };
 
 const CONFIG = {
@@ -197,12 +198,18 @@ async function processDocuments() {
 
   resetOutputOnly();
 
-  try {
-    setStatus("Reading template structure...");
+try {
+  setStatus("Loading Firebase template controller...");
 
-    const templatePdf = await extractPdf(state.templateFile, {
-      collectVisuals: false
-    });
+  state.templateController = await loadTemplateController();
+
+  console.log("Firebase Template Controller:", state.templateController);
+
+  setStatus("Reading template structure...");
+
+  const templatePdf = await extractPdf(state.templateFile, {
+    collectVisuals: false
+  });
 
     const templateProfile = buildTemplateProfile(templatePdf);
     state.templateProfile = templateProfile;
