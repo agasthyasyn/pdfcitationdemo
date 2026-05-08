@@ -1,11 +1,18 @@
-// Import the functions you need from the SDKs you need
-import { initializeApp } from "firebase/app";
-import { getAnalytics } from "firebase/analytics";
-// TODO: Add SDKs for Firebase products that you want to use
-// https://firebase.google.com/docs/web/setup#available-libraries
+// firebase.client.js
 
-// Your web app's Firebase configuration
-// For Firebase JS SDK v7.20.0 and later, measurementId is optional
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
+import {
+  getFirestore,
+  collection,
+  doc,
+  getDoc,
+  getDocs,
+  query,
+  where,
+  orderBy,
+  limit
+} from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
+
 const firebaseConfig = {
   apiKey: "AIzaSyArYR3yq01Arc2xuOfC28uzBGlBRuZxFlI",
   authDomain: "pdf-modifier-tool.firebaseapp.com",
@@ -16,6 +23,17 @@ const firebaseConfig = {
   measurementId: "G-ZWMG6FN7EK"
 };
 
-// Initialize Firebase
 const app = initializeApp(firebaseConfig);
-const analytics = getAnalytics(app);
+const db = getFirestore(app);
+
+export {
+  db,
+  collection,
+  doc,
+  getDoc,
+  getDocs,
+  query,
+  where,
+  orderBy,
+  limit
+};
