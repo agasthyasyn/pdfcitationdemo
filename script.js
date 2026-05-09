@@ -830,9 +830,10 @@ function buildDocumentModel({ sourcePdf, sourceProfile, templateContract }) {
     : [];
 
   const sections = templateContract.sections.map((templateSection) => ({
-    id: templateSection.id,
-    order: templateSection.order,
-    heading: templateSection.heading,
+    ...templateSection,
+    aliases: Array.isArray(templateSection.aliases) ? templateSection.aliases : [],
+    signals: Array.isArray(templateSection.signals) ? templateSection.signals : [],
+    negatives: Array.isArray(templateSection.negatives) ? templateSection.negatives : [],
     blocks: [],
     score: 0,
     pageNumbers: [],
@@ -993,20 +994,28 @@ function scoreSection(section, chunk) {
   const source = comparable(sourceText);
   const heading = comparable(chunk.heading);
   const contentTokens = tokenize(chunk.content);
-  const sectionTokens = tokenize(`${section.heading} ${section.aliases.join(" ")}`);
 
-  const aliasHits = section.aliases.filter((alias) => {
+  const aliases = Array.isArray(section.aliases) ? section.aliases : [];
+  const signals = Array.isArray(section.signals) ? section.signals : [];
+  const negatives = Array.isArray(section.negatives) ? section.negatives : [];
+
+  const sectionTokens = tokenize(`${section.heading || ""} ${aliases.join(" ")}`);
+
+  const aliasHits = aliases.filter((alias) => {
     const value = comparable(alias);
     return value && (source.includes(value) || heading.includes(value));
   }).length;
-  const signalHits = section.signals.filter((signal) => {
+
+  const signalHits = signals.filter((signal) => {
     const value = comparable(signal);
     return value && source.includes(value);
   }).length;
-  const negativeHits = section.negatives.filter((signal) => {
+
+  const negativeHits = negatives.filter((signal) => {
     const value = comparable(signal);
     return value && source.includes(value);
   }).length;
+
   const tokenScore = weightedTokenOverlap(sectionTokens, contentTokens);
   const ruleScore = scoreSectionWithRuleEngine(section.heading, sourceText);
 
