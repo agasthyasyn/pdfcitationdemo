@@ -147,6 +147,51 @@ const COMMON_HEADER_LABELS = [
   "Prepared For"
 ];
 
+const LOCAL_FALLBACK_RULE_ENGINE = {
+  version: 2,
+  fallbackValue: "Not Available",
+  visuals: {
+    enabled: false,
+    manualReviewRequired: true,
+    rejectTextHeavyCrops: true,
+    rejectIfTextDensityAbovePercent: 18
+  },
+  qualityRules: {
+    minimumSectionScore: 55,
+    minimumFieldScore: 62,
+    minimumValueLength: 3,
+    doNotGuessMissingValues: true,
+    rejectWeakValues: true,
+    sendWeakMatchesToReview: true
+  },
+  sectionRules: [
+    { concept: "keyInformation", targetAliases: ["key information", "summary", "basic details", "main details"], sourceSignals: ["vessel", "port", "country", "cargo", "agent", "time zone", "arrival", "berth"], negativeSignals: ["remarks", "notes", "crew change", "shore leave"] },
+    { concept: "arrivalPortStay", targetAliases: ["arrival", "port stay", "date", "eta", "etb", "etd"], sourceSignals: ["arrival", "date of arrival", "eta", "etb", "etd", "notice", "port stay", "anchored"], negativeSignals: ["agent", "invoice", "charts", "publications"] },
+    { concept: "anchorage", targetAliases: ["anchorage", "anchor", "waiting area"], sourceSignals: ["anchorage", "anchor", "anchored", "waiting", "roads", "outer anchorage"], negativeSignals: ["agent", "invoice", "cargo declaration"] },
+    { concept: "pilotageNavigation", targetAliases: ["pilotage", "approach", "navigation", "pilot", "vhf", "communication"], sourceSignals: ["pilot", "pilotage", "vhf", "channel", "boarding", "pilot ladder", "tug", "towage", "navigation", "approach"], negativeSignals: ["agent", "invoice", "cargo declaration", "supplier"] },
+    { concept: "berthTerminalDepth", targetAliases: ["berth", "terminal", "depth", "draft", "draught", "pier", "jetty"], sourceSignals: ["berth", "terminal", "pier", "jetty", "depth", "draft", "draught", "quay", "channel", "density", "salinity"], negativeSignals: ["agent", "crew", "documents", "invoice"] },
+    { concept: "cargoOperations", targetAliases: ["cargo", "operations", "loading", "discharging", "rate"], sourceSignals: ["cargo", "loading", "discharging", "operation", "rate", "shore scale", "loading rate", "discharging rate"], negativeSignals: ["agent", "pilot", "charts", "crew"] },
+    { concept: "agentsContacts", targetAliases: ["agent", "agents", "contact", "agency"], sourceSignals: ["agent", "agents", "agency", "contact", "phone", "email", "mobile", "pic"], negativeSignals: ["cargo", "pilot", "berth", "depth", "draft"] },
+    { concept: "documentsFormalities", targetAliases: ["documents", "formalities", "pre arrival", "requirements"], sourceSignals: ["documents", "crew list", "declaration", "certificate", "manifest", "passport", "ballast", "pre arrival", "formalities"], negativeSignals: ["agent contact", "berth depth", "cargo rate"] },
+    { concept: "regulationsRestrictions", targetAliases: ["regulations", "restrictions", "security", "health", "shore leave", "crew change"], sourceSignals: ["regulations", "restriction", "security", "isps", "health", "shore leave", "crew change", "inspection", "psc", "permitted", "not permitted"], negativeSignals: ["cargo rate", "berth depth", "agent email"] },
+    { concept: "servicesSupplies", targetAliases: ["services", "supplies", "waste", "fresh water", "bunkers"], sourceSignals: ["garbage", "bunker", "fresh water", "sludge", "stores", "provisions", "waste", "supply", "supplies"], negativeSignals: ["pilot", "vhf", "charts"] },
+    { concept: "publicationsCharts", targetAliases: ["publications", "charts", "nautical charts", "reference"], sourceSignals: ["charts", "publications", "enc", "enp", "admiralty", "pilot vol", "sailing directions"], negativeSignals: ["agent", "cargo", "invoice"] },
+    { concept: "remarksNotes", targetAliases: ["remarks", "notes", "experience", "detailed notes", "additional information"], sourceSignals: ["remarks", "note", "general information", "additional", "experience", "observed"], negativeSignals: [] }
+  ],
+  fieldRules: [
+    { concept: "vesselName", targetAliases: ["vessel", "vessel name", "ship", "m/v", "mv"], sourcePatterns: ["Vessel: {value}", "Vessel Name: {value}", "M/V: {value}", "MV {value}"], sourceSignals: ["vessel", "vessel name", "ship", "m/v", "mv"] },
+    { concept: "portName", targetAliases: ["port", "port name", "location"], sourcePatterns: ["Port: {value}", "Port Name: {value}", "Location: {value}"], sourceSignals: ["port", "port name", "location"] },
+    { concept: "country", targetAliases: ["country"], sourcePatterns: ["Country: {value}"], sourceSignals: ["country"] },
+    { concept: "arrivalDate", targetAliases: ["date", "arrival", "date of arrival", "eta", "etb", "etd", "port stay"], sourcePatterns: ["Date of Arrival: {value}", "Arrival: {value}", "ETA: {value}", "ETB: {value}", "ETD: {value}"], sourceSignals: ["date of arrival", "arrival", "eta", "etb", "etd", "port stay"] },
+    { concept: "berthTerminal", targetAliases: ["berth", "terminal", "pier", "jetty"], sourcePatterns: ["Berth: {value}", "Berth Name: {value}", "Terminal: {value}", "Pier: {value}", "Jetty: {value}"], sourceSignals: ["berth", "berth name", "terminal", "pier", "jetty"] },
+    { concept: "depthDraft", targetAliases: ["depth", "draft", "draught", "channel"], sourcePatterns: ["Depth: {value}", "Draft: {value}", "Draught: {value}", "Channel: {value}", "Berth Depth: {value}"], sourceSignals: ["depth", "draft", "draught", "channel", "berth depth"] },
+    { concept: "cargo", targetAliases: ["cargo", "commodity"], sourcePatterns: ["Cargo: {value}", "Commodity: {value}"], sourceSignals: ["cargo", "commodity"] },
+    { concept: "vhfCommunication", targetAliases: ["vhf", "communication", "channel", "radio"], sourcePatterns: ["VHF CHANNEL: {value}", "VHF: {value}", "Channel: {value}", "Pilot VHF: {value}"], sourceSignals: ["vhf", "channel", "radio", "communication"] },
+    { concept: "agentContact", targetAliases: ["agent", "agent / contact", "agents", "agency", "contact"], sourcePatterns: ["Agent: {value}", "Agents: {value}", "Agency: {value}", "Contact: {value}"], sourceSignals: ["agent", "agents", "agency", "contact", "phone", "email", "mobile"] },
+    { concept: "publicationsCharts", targetAliases: ["publications", "charts", "enc", "enp"], sourcePatterns: ["ENC: {value}", "Charts: {value}", "Publications: {value}"], sourceSignals: ["enc", "charts", "publications", "enp", "admiralty"] }
+  ]
+};
+
 bindEvents();
 setInitialState();
 
@@ -214,16 +259,75 @@ function getVisualRules() {
   return getController().visualRules || {};
 }
 
+function getRuleEngine() {
+  const remote = getController().ruleEngine || {};
+  const remoteSectionRules = Array.isArray(remote.sectionRules) ? remote.sectionRules : [];
+  const remoteFieldRules = Array.isArray(remote.fieldRules) ? remote.fieldRules : [];
+
+  return {
+    ...LOCAL_FALLBACK_RULE_ENGINE,
+    ...remote,
+    visuals: {
+      ...LOCAL_FALLBACK_RULE_ENGINE.visuals,
+      ...(remote.visuals || {})
+    },
+    qualityRules: {
+      ...LOCAL_FALLBACK_RULE_ENGINE.qualityRules,
+      ...(remote.qualityRules || {})
+    },
+    sectionRules: remoteSectionRules.length ? remoteSectionRules : LOCAL_FALLBACK_RULE_ENGINE.sectionRules,
+    fieldRules: remoteFieldRules.length ? remoteFieldRules : LOCAL_FALLBACK_RULE_ENGINE.fieldRules
+  };
+}
+
+function getQualityRules() {
+  return getRuleEngine().qualityRules || {};
+}
+
+function getSectionRules() {
+  return Array.isArray(getRuleEngine().sectionRules) ? getRuleEngine().sectionRules : [];
+}
+
+function getFieldRules() {
+  return Array.isArray(getRuleEngine().fieldRules) ? getRuleEngine().fieldRules : [];
+}
+
 function getFallbackValue() {
   return (
     getDetectionRules().missingValue ||
     getController().fallbackValue ||
+    getRuleEngine().fallbackValue ||
     "Not Available"
   );
 }
 
 function boolRule(value, defaultValue) {
   return typeof value === "boolean" ? value : defaultValue;
+}
+
+function scoreFromPercent(value, fallback) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  return number > 1 ? number / 100 : number;
+}
+
+function getMinimumSectionScore() {
+  return scoreFromPercent(getQualityRules().minimumSectionScore, CONFIG.mapping.minSectionScore);
+}
+
+function getMinimumFieldScore() {
+  return scoreFromPercent(getQualityRules().minimumFieldScore, CONFIG.mapping.minFieldScore);
+}
+
+function getMinimumValueLength() {
+  const value = Number(getQualityRules().minimumValueLength);
+  return Number.isFinite(value) && value > 0 ? value : 3;
+}
+
+function isVisualCaptureEnabled() {
+  const detectionValue = boolRule(getDetectionRules().detectVisuals, false);
+  const ruleEngineValue = boolRule(getRuleEngine().visuals?.enabled, detectionValue);
+  return detectionValue && ruleEngineValue;
 }
 
 async function processDocuments() {
@@ -256,7 +360,7 @@ async function processDocuments() {
       const file = state.sourceFiles[i];
       setStatus(`Processing ${file.name} (${i + 1} of ${state.sourceFiles.length})...`);
 
-      const sourcePdf = await extractPdf(file, { collectVisuals: true });
+      const sourcePdf = await extractPdf(file, { collectVisuals: isVisualCaptureEnabled() });
       const sourceProfile = buildSourceProfile(sourcePdf);
       const documentModel = await buildDocumentModel({
         sourcePdf,
@@ -317,7 +421,7 @@ async function extractPdf(file, options = {}) {
     let renderedPage = null;
     let visualCandidates = [];
 
-    if (collectVisuals && boolRule(getDetectionRules().detectVisuals, true)) {
+    if (collectVisuals && boolRule(getDetectionRules().detectVisuals, false)) {
       renderedPage = await renderPageToDataUrl(page, CONFIG.extraction.renderScale);
       visualCandidates = detectVisualCandidates({
         pageNumber,
@@ -1044,7 +1148,7 @@ async function buildDocumentModel({ sourcePdf, sourceProfile, templateContract }
 
     const best = findBestTemplateSection(sourceSection, mappedSections);
 
-    if (best.index >= 0 && best.score >= CONFIG.mapping.minSectionScore) {
+    if (best.index >= 0 && best.score >= getMinimumSectionScore()) {
       const target = mappedSections[best.index];
       const blockText = buildSectionBlockText(sourceSection, target.heading);
 
@@ -1123,18 +1227,22 @@ function findBestFieldFact(field, facts) {
   const aliases = [field.label, ...(field.aliases || [])];
 
   for (const fact of facts) {
-    const haystack = comparable(`${fact.key} ${fact.value} ${fact.evidence || ""}`);
+    if (!isAcceptableFactValue(fact.value)) continue;
+
+    const factText = `${fact.key} ${fact.value} ${fact.evidence || ""}`;
+    const haystack = comparable(factText);
     let score = 0;
 
     for (const alias of aliases) {
       const aliasValue = comparable(alias);
       if (!aliasValue) continue;
 
-      if (haystack.includes(aliasValue)) score = Math.max(score, 0.92);
-      score = Math.max(score, weightedTokenOverlap(tokenize(alias), tokenize(`${fact.key} ${fact.value} ${fact.evidence || ""}`)));
+      if (haystack.includes(aliasValue)) score = Math.max(score, 0.88);
+      score = Math.max(score, weightedTokenOverlap(tokenize(alias), tokenize(factText)));
     }
 
     score = Math.max(score, semanticFieldScore(field.label, fact));
+    score = Math.max(score, scoreFieldWithRuleEngine(field, fact));
 
     if (score > bestScore) {
       bestScore = score;
@@ -1142,8 +1250,62 @@ function findBestFieldFact(field, facts) {
     }
   }
 
-  if (!best || bestScore < CONFIG.mapping.minFieldScore) return null;
+  if (!best || bestScore < getMinimumFieldScore()) return null;
   return { ...best, confidence: Number(bestScore.toFixed(2)) };
+}
+
+function scoreFieldWithRuleEngine(field, fact) {
+  const rules = getFieldRules();
+  if (!rules.length) return 0;
+
+  const fieldText = comparable(`${field.label} ${(field.aliases || []).join(" ")}`);
+  const factText = comparable(`${fact.key} ${fact.value} ${fact.evidence || ""}`);
+  let best = 0;
+
+  for (const rule of rules) {
+    const targetAliases = Array.isArray(rule.targetAliases) ? rule.targetAliases : [];
+    const sourceSignals = Array.isArray(rule.sourceSignals) ? rule.sourceSignals : [];
+    const sourcePatterns = Array.isArray(rule.sourcePatterns) ? rule.sourcePatterns : [];
+
+    const targetHits = targetAliases.filter((alias) => {
+      const value = comparable(alias);
+      return value && fieldText.includes(value);
+    }).length;
+
+    if (!targetHits) continue;
+
+    const signalHits = sourceSignals.filter((signal) => {
+      const value = comparable(signal);
+      return value && factText.includes(value);
+    }).length;
+
+    const patternHits = sourcePatterns.filter((pattern) => {
+      const value = comparable(String(pattern).replace("{value}", ""));
+      return value && factText.includes(value);
+    }).length;
+
+    if (!signalHits && !patternHits) continue;
+
+    const score = Math.min(0.95, 0.42 + targetHits * 0.12 + signalHits * 0.11 + patternHits * 0.08);
+    best = Math.max(best, score);
+  }
+
+  return best;
+}
+
+function isAcceptableFactValue(value) {
+  const clean = normalizeLine(String(value || ""));
+  const normalized = comparable(clean);
+  const fallback = comparable(getFallbackValue());
+
+  if (!clean) return false;
+  if (normalized === fallback) return false;
+  if (clean.length < getMinimumValueLength()) return false;
+  if (/^[\W_]+$/.test(clean)) return false;
+  if (/^[a-zA-Z]:?$/.test(clean)) return false;
+  if (/^(n\/?a|nil|null|none|unknown)$/i.test(clean)) return false;
+
+  return true;
 }
 
 function semanticFieldScore(label, fact) {
@@ -1197,15 +1359,66 @@ function findBestTemplateSection(sourceSection, mappedSections) {
 function scoreSectionMatch(templateHeading, sourceSection) {
   const templateTokens = tokenize(templateHeading);
   const sourceHeadingTokens = tokenize(sourceSection.heading);
-  const sourceContentTokens = tokenize(sourceSection.content).slice(0, 160);
+  const sourceContentTokens = tokenize(sourceSection.content).slice(0, 180);
 
   if (!templateTokens.length) return 0;
 
+  const sourceText = `${sourceSection.heading}\n${sourceSection.content}`;
   const headingScore = weightedTokenOverlap(templateTokens, sourceHeadingTokens);
   const contentScore = weightedTokenOverlap(templateTokens, sourceContentTokens);
-  const semanticScore = semanticBoost(templateHeading, `${sourceSection.heading}\n${sourceSection.content}`);
+  const semanticScore = semanticBoost(templateHeading, sourceText);
+  const ruleEngineScore = scoreSectionWithRuleEngine(templateHeading, sourceText);
 
-  return Math.min(1, headingScore * 0.5 + contentScore * 0.2 + semanticScore * 0.3);
+  return Math.min(
+    1,
+    headingScore * 0.32 +
+      contentScore * 0.16 +
+      semanticScore * 0.18 +
+      ruleEngineScore * 0.34
+  );
+}
+
+function scoreSectionWithRuleEngine(templateHeading, sourceText) {
+  const rules = getSectionRules();
+  if (!rules.length) return 0;
+
+  const target = comparable(templateHeading);
+  const source = comparable(sourceText);
+  let best = 0;
+
+  for (const rule of rules) {
+    const targetAliases = Array.isArray(rule.targetAliases) ? rule.targetAliases : [];
+    const sourceSignals = Array.isArray(rule.sourceSignals) ? rule.sourceSignals : [];
+    const negativeSignals = Array.isArray(rule.negativeSignals) ? rule.negativeSignals : [];
+
+    const targetHits = targetAliases.filter((alias) => {
+      const value = comparable(alias);
+      return value && target.includes(value);
+    }).length;
+
+    if (!targetHits) continue;
+
+    const sourceHits = sourceSignals.filter((signal) => {
+      const value = comparable(signal);
+      return value && source.includes(value);
+    }).length;
+
+    if (!sourceHits) continue;
+
+    const negativeHits = negativeSignals.filter((signal) => {
+      const value = comparable(signal);
+      return value && source.includes(value);
+    }).length;
+
+    const targetScore = Math.min(0.35, targetHits * 0.18);
+    const signalScore = Math.min(0.75, sourceHits * 0.13);
+    const penalty = Math.min(0.45, negativeHits * 0.15);
+    const total = Math.max(0, targetScore + signalScore - penalty);
+
+    best = Math.max(best, total);
+  }
+
+  return Math.min(1, best);
 }
 
 function semanticBoost(templateHeading, sourceText) {
@@ -1679,7 +1892,15 @@ async function embedPngFromDataUrl(pdfDoc, dataUrl) {
 function renderDetectedDetails(templateContract, documents) {
   const lines = [];
 
+  const ruleEngine = getRuleEngine();
+  const qualityRules = getQualityRules();
+
   lines.push(`Firebase Controller: ${state.templateController?.schemaId || "Not Loaded"}`);
+  lines.push(`Rule Engine Version: ${ruleEngine.version || "Not Available"}`);
+  lines.push(`Section Rules Available: ${getSectionRules().length}`);
+  lines.push(`Field Rules Available: ${getFieldRules().length}`);
+  lines.push(`Minimum Section Score: ${qualityRules.minimumSectionScore ?? "Default"}`);
+  lines.push(`Minimum Field Score: ${qualityRules.minimumFieldScore ?? "Default"}`);
   lines.push(`Template: ${templateContract.fileName}`);
   lines.push(`Template Pages: ${templateContract.pageCount}`);
   lines.push(`Detected Header Fields: ${templateContract.headerFields.length}`);
