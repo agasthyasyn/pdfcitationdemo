@@ -1,26 +1,34 @@
 // schema.controller.js
 
-import { db, doc, getDoc } from "./firebase.client.js";
+import {
+  db,
+  collection,
+  getDocs,
+  query,
+  where,
+  limit
+} from "./firebase.client.js";
 
-const FALLBACK_TEMPLATE_CONTROLLER = {
+/*
+  Purpose:
+  - Load the active Firebase template schema.
+  - Read controllerJson from Firestore.
+  - Parse controllerJson safely.
+  - Merge Firebase base fields + controllerJson into one clean controller object.
+  - Keep fallback defaults if Firebase is unavailable or controllerJson has an issue.
+*/
+
+const DEFAULT_CONTROLLER = {
   schemaId: "generic_template_alignment",
-  schemaName: "Generic Template Alignment - Local Fallback",
+  schemaName: "Generic Template Alignment",
   active: true,
   version: 1,
   fallbackValue: "Not Available",
-  templateMode: "sample_driven",
-  summaryFieldsMode: "auto_from_sample",
-  sectionsMode: "auto_from_sample",
-  visualMode: "strict_visual_only",
-  unmappedContentMode: "append_to_last_notes_section",
-  removeSystemNotes: true,
-  removeSourceLabels: true,
-  preserveSourceContent: true,
 
   detectionRules: {
     detectHeaderTable: true,
     detectSections: true,
-    detectVisuals: true,
+    detectVisuals: false,
     minimumHeaderFields: 2,
     minimumSections: 2,
     missingValue: "Not Available"
@@ -45,32 +53,187 @@ const FALLBACK_TEMPLATE_CONTROLLER = {
     rejectHeadersFooters: true,
     rejectIfTextDensityAbovePercent: 18,
     rejectTextHeavyCrops: true
+  },
+
+  ruleEngine: {
+    version: 2,
+    fallbackValue: "Not Available",
+
+    visuals: {
+      enabled: false,
+      manualReviewRequired: true,
+      rejectTextHeavyCrops: true,
+      rejectIfTextDensityAbovePercent: 18
+    },
+
+    qualityRules: {
+      minimumSectionScore: 55,
+      minimumFieldScore: 62,
+      minimumValueLength: 3,
+      doNotGuessMissingValues: true,
+      rejectWeakValues: true,
+      sendWeakMatchesToReview: true
+    },
+
+    sectionRules: [],
+    fieldRules: []
   }
 };
 
 export async function loadTemplateController() {
   try {
-    const ref = doc(db, "templateSchemas", "EKsLu4CtBolKNKDssJNe");
-    const snap = await getDoc(ref);
+    const schemaQuery = query(
+      collection(db, "templateSchemas"),
+      where("schemaId", "==", "generic_template_alignment"),
+      limit(10)
+    );
 
-    if (!snap.exists()) {
-      console.warn("Firebase controller document not found. Using fallback controller.");
-      return FALLBACK_TEMPLATE_CONTROLLER;
+    const snapshot = await getDocs(schemaQuery);
+
+    if (snapshot.empty) {
+      console.warn("No Firebase template schema found. Using default controller.");
+      return DEFAULT_CONTROLLER;
     }
 
-    const controller = snap.data();
+    const activeDoc =
+      snapshot.docs.find((item) => item.data()?.active === true) ||
+      snapshot.docs[0];
 
-    if (!controller.active) {
-      console.warn("Firebase controller is inactive. Using fallback controller.");
-      return FALLBACK_TEMPLATE_CONTROLLER;
-    }
+    const firebaseData = activeDoc.data() || {};
+    const parsedControllerJson = parseControllerJson(firebaseData.controllerJson);
 
-    return {
-      id: snap.id,
-      ...controller
-    };
+    const mergedController = normalizeController({
+      ...DEFAULT_CONTROLLER,
+      ...firebaseData,
+      id: activeDoc.id,
+      ruleEngine: {
+        ...DEFAULT_CONTROLLER.ruleEngine,
+        ...parsedControllerJson,
+        visuals: {
+          ...DEFAULT_CONTROLLER.ruleEngine.visuals,
+          ...(parsedControllerJson.visuals || {})
+        },
+        qualityRules: {
+          ...DEFAULT_CONTROLLER.ruleEngine.qualityRules,
+          ...(parsedControllerJson.qualityRules || {})
+        },
+        sectionRules: Array.isArray(parsedControllerJson.sectionRules)
+          ? parsedControllerJson.sectionRules
+          : [],
+        fieldRules: Array.isArray(parsedControllerJson.fieldRules)
+          ? parsedControllerJson.fieldRules
+          : []
+      }
+    });
+
+    console.log("Loaded Firebase template controller:", mergedController);
+    return mergedController;
   } catch (error) {
-    console.warn("Firebase controller load failed. Using fallback controller.", error);
-    return FALLBACK_TEMPLATE_CONTROLLER;
+    console.warn("Failed to load Firebase template controller. Using default controller.", error);
+    return DEFAULT_CONTROLLER;
   }
+}
+
+function parseControllerJson(value) {
+  if (!value) return {};
+
+  if (typeof value === "object" && !Array.isArray(value)) {
+    return value;
+  }
+
+  if (typeof value !== "string") {
+    console.warn("controllerJson exists, but it is not a string. Ignoring it.");
+    return {};
+  }
+
+  const trimmed = value.trim();
+
+  if (!trimmed) return {};
+
+  try {
+    return JSON.parse(trimmed);
+  } catch (error) {
+    console.warn("Invalid controllerJson in Firebase. Please check the JSON string.", error);
+    return {};
+  }
+}
+
+function normalizeController(controller) {
+  const ruleEngine = controller.ruleEngine || {};
+  const visuals = ruleEngine.visuals || {};
+  const qualityRules = ruleEngine.qualityRules || {};
+
+  const fallbackValue =
+    controller.fallbackValue ||
+    ruleEngine.fallbackValue ||
+    "Not Available";
+
+  const detectVisuals =
+    typeof visuals.enabled === "boolean"
+      ? visuals.enabled
+      : controller.detectionRules?.detectVisuals ?? false;
+
+  return {
+    ...controller,
+
+    fallbackValue,
+
+    detectionRules: {
+      ...DEFAULT_CONTROLLER.detectionRules,
+      ...(controller.detectionRules || {}),
+      detectVisuals,
+      missingValue:
+        controller.detectionRules?.missingValue ||
+        fallbackValue ||
+        "Not Available"
+    },
+
+    outputRules: {
+      ...DEFAULT_CONTROLLER.outputRules,
+      ...(controller.outputRules || {})
+    },
+
+    visualRules: {
+      ...DEFAULT_CONTROLLER.visualRules,
+      ...(controller.visualRules || {}),
+      manualReviewRequired:
+        typeof visuals.manualReviewRequired === "boolean"
+          ? visuals.manualReviewRequired
+          : controller.visualRules?.manualReviewRequired ?? true,
+      rejectTextHeavyCrops:
+        typeof visuals.rejectTextHeavyCrops === "boolean"
+          ? visuals.rejectTextHeavyCrops
+          : controller.visualRules?.rejectTextHeavyCrops ?? true,
+      rejectIfTextDensityAbovePercent:
+        visuals.rejectIfTextDensityAbovePercent ??
+        controller.visualRules?.rejectIfTextDensityAbovePercent ??
+        18
+    },
+
+    ruleEngine: {
+      ...ruleEngine,
+
+      version: ruleEngine.version || 2,
+      fallbackValue,
+
+      visuals: {
+        ...DEFAULT_CONTROLLER.ruleEngine.visuals,
+        ...visuals,
+        enabled: detectVisuals
+      },
+
+      qualityRules: {
+        ...DEFAULT_CONTROLLER.ruleEngine.qualityRules,
+        ...qualityRules
+      },
+
+      sectionRules: Array.isArray(ruleEngine.sectionRules)
+        ? ruleEngine.sectionRules
+        : [],
+
+      fieldRules: Array.isArray(ruleEngine.fieldRules)
+        ? ruleEngine.fieldRules
+        : []
+    }
+  };
 }
