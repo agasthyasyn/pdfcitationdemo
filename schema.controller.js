@@ -3,6 +3,8 @@
 import {
   db,
   collection,
+  doc,
+  getDoc,
   getDocs,
   query,
   where,
@@ -12,11 +14,14 @@ import {
 /*
   Purpose:
   - Load the active Firebase template schema.
+  - First try direct Firestore document read using known document ID.
   - Read controllerJson from Firestore.
   - Parse controllerJson safely.
   - Merge Firebase base fields + controllerJson into one clean controller object.
   - Keep fallback defaults if Firebase is unavailable or controllerJson has an issue.
 */
+
+const TEMPLATE_SCHEMA_DOC_ID = "EKsLu4CtBolKNKDssJNe";
 
 const DEFAULT_CONTROLLER = {
   schemaId: "generic_template_alignment",
@@ -82,6 +87,24 @@ const DEFAULT_CONTROLLER = {
 
 export async function loadTemplateController() {
   try {
+    /*
+      1. Preferred method:
+      Read the known Firestore document directly.
+      This avoids query mismatch issues.
+    */
+    const directRef = doc(db, "templateSchemas", TEMPLATE_SCHEMA_DOC_ID);
+    const directSnap = await getDoc(directRef);
+
+    if (directSnap.exists()) {
+      const controller = buildControllerFromSnapshot(directSnap);
+      console.log("Loaded Firebase template controller by document ID:", controller);
+      return controller;
+    }
+
+    /*
+      2. Fallback method:
+      Query by schemaId if direct document ID is not found.
+    */
     const schemaQuery = query(
       collection(db, "templateSchemas"),
       where("schemaId", "==", "generic_template_alignment"),
@@ -90,48 +113,57 @@ export async function loadTemplateController() {
 
     const snapshot = await getDocs(schemaQuery);
 
-    if (snapshot.empty) {
-      console.warn("No Firebase template schema found. Using default controller.");
-      return DEFAULT_CONTROLLER;
+    if (!snapshot.empty) {
+      const activeDoc =
+        snapshot.docs.find((item) => item.data()?.active === true) ||
+        snapshot.docs[0];
+
+      const controller = buildControllerFromSnapshot(activeDoc);
+      console.log("Loaded Firebase template controller by schemaId query:", controller);
+      return controller;
     }
 
-    const activeDoc =
-      snapshot.docs.find((item) => item.data()?.active === true) ||
-      snapshot.docs[0];
-
-    const firebaseData = activeDoc.data() || {};
-    const parsedControllerJson = parseControllerJson(firebaseData.controllerJson);
-
-    const mergedController = normalizeController({
-      ...DEFAULT_CONTROLLER,
-      ...firebaseData,
-      id: activeDoc.id,
-      ruleEngine: {
-        ...DEFAULT_CONTROLLER.ruleEngine,
-        ...parsedControllerJson,
-        visuals: {
-          ...DEFAULT_CONTROLLER.ruleEngine.visuals,
-          ...(parsedControllerJson.visuals || {})
-        },
-        qualityRules: {
-          ...DEFAULT_CONTROLLER.ruleEngine.qualityRules,
-          ...(parsedControllerJson.qualityRules || {})
-        },
-        sectionRules: Array.isArray(parsedControllerJson.sectionRules)
-          ? parsedControllerJson.sectionRules
-          : [],
-        fieldRules: Array.isArray(parsedControllerJson.fieldRules)
-          ? parsedControllerJson.fieldRules
-          : []
-      }
-    });
-
-    console.log("Loaded Firebase template controller:", mergedController);
-    return mergedController;
+    console.warn("No Firebase template schema found. Using default controller.");
+    return DEFAULT_CONTROLLER;
   } catch (error) {
     console.warn("Failed to load Firebase template controller. Using default controller.", error);
     return DEFAULT_CONTROLLER;
   }
+}
+
+function buildControllerFromSnapshot(docSnap) {
+  const firebaseData = docSnap.data() || {};
+  const parsedControllerJson = parseControllerJson(firebaseData.controllerJson);
+
+  const mergedController = {
+    ...DEFAULT_CONTROLLER,
+    ...firebaseData,
+    id: docSnap.id,
+    ruleEngine: {
+      ...DEFAULT_CONTROLLER.ruleEngine,
+      ...parsedControllerJson,
+
+      visuals: {
+        ...DEFAULT_CONTROLLER.ruleEngine.visuals,
+        ...(parsedControllerJson.visuals || {})
+      },
+
+      qualityRules: {
+        ...DEFAULT_CONTROLLER.ruleEngine.qualityRules,
+        ...(parsedControllerJson.qualityRules || {})
+      },
+
+      sectionRules: Array.isArray(parsedControllerJson.sectionRules)
+        ? parsedControllerJson.sectionRules
+        : [],
+
+      fieldRules: Array.isArray(parsedControllerJson.fieldRules)
+        ? parsedControllerJson.fieldRules
+        : []
+    }
+  };
+
+  return normalizeController(mergedController);
 }
 
 function parseControllerJson(value) {
@@ -196,14 +228,17 @@ function normalizeController(controller) {
     visualRules: {
       ...DEFAULT_CONTROLLER.visualRules,
       ...(controller.visualRules || {}),
+
       manualReviewRequired:
         typeof visuals.manualReviewRequired === "boolean"
           ? visuals.manualReviewRequired
           : controller.visualRules?.manualReviewRequired ?? true,
+
       rejectTextHeavyCrops:
         typeof visuals.rejectTextHeavyCrops === "boolean"
           ? visuals.rejectTextHeavyCrops
           : controller.visualRules?.rejectTextHeavyCrops ?? true,
+
       rejectIfTextDensityAbovePercent:
         visuals.rejectIfTextDensityAbovePercent ??
         controller.visualRules?.rejectIfTextDensityAbovePercent ??
