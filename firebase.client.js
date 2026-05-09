@@ -18,10 +18,10 @@ import {
 /*
   Purpose:
   - Initialize Firebase.
-  - Initialize Firestore with safer browser/network settings.
+  - Initialize Firestore with browser-safe network settings.
   - Export the Firestore helpers used by schema.controller.js.
-  - This is useful when Firestore shows:
-    "Failed to get document because the client is offline."
+  - Avoid the crash caused by using both:
+    experimentalAutoDetectLongPolling and experimentalForceLongPolling together.
 */
 
 const firebaseConfig = {
@@ -38,18 +38,19 @@ const app = initializeApp(firebaseConfig);
 
 /*
   Important:
-  initializeFirestore must be called before any getFirestore-style access.
-  Long polling helps when Firestore's default streaming connection is blocked
-  or unreliable on some browsers/networks.
+  Do NOT use experimentalForceLongPolling and
+  experimentalAutoDetectLongPolling together.
+
+  We are using auto-detect first because it is safer.
+  If your network still blocks Firestore, we can later switch to force mode.
 */
 const db = initializeFirestore(app, {
   experimentalAutoDetectLongPolling: true,
-  experimentalForceLongPolling: true,
   ignoreUndefinedProperties: true
 });
 
-// Best effort: explicitly enable network.
-// This will not hurt if the network is already enabled.
+// Best-effort network enable.
+// If already enabled, this will do nothing harmful.
 enableNetwork(db).catch((error) => {
   console.warn("Firestore network enable warning:", error);
 });
