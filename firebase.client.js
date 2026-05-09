@@ -18,10 +18,9 @@ import {
 /*
   Purpose:
   - Initialize Firebase.
-  - Initialize Firestore with browser-safe network settings.
-  - Export the Firestore helpers used by schema.controller.js.
-  - Avoid the crash caused by using both:
-    experimentalAutoDetectLongPolling and experimentalForceLongPolling together.
+  - Initialize Firestore with force long polling only.
+  - Do not use experimentalAutoDetectLongPolling and experimentalForceLongPolling together.
+  - Export Firestore helpers used by schema.controller.js.
 */
 
 const firebaseConfig = {
@@ -38,19 +37,18 @@ const app = initializeApp(firebaseConfig);
 
 /*
   Important:
-  Do NOT use experimentalForceLongPolling and
-  experimentalAutoDetectLongPolling together.
+  We are using force long polling only.
 
-  We are using auto-detect first because it is safer.
-  If your network still blocks Firestore, we can later switch to force mode.
+  Do not add:
+  experimentalAutoDetectLongPolling: true
+
+  Firebase does not allow force mode and auto-detect mode together.
 */
 const db = initializeFirestore(app, {
-  experimentalAutoDetectLongPolling: true,
+  experimentalForceLongPolling: true,
   ignoreUndefinedProperties: true
 });
 
-// Best-effort network enable.
-// If already enabled, this will do nothing harmful.
 enableNetwork(db).catch((error) => {
   console.warn("Firestore network enable warning:", error);
 });
