@@ -1,8 +1,9 @@
 // firebase.client.js
 
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
+
 import {
-  getFirestore,
+  initializeFirestore,
   collection,
   doc,
   getDoc,
@@ -10,8 +11,18 @@ import {
   query,
   where,
   orderBy,
-  limit
+  limit,
+  enableNetwork
 } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
+
+/*
+  Purpose:
+  - Initialize Firebase.
+  - Initialize Firestore with safer browser/network settings.
+  - Export the Firestore helpers used by schema.controller.js.
+  - This is useful when Firestore shows:
+    "Failed to get document because the client is offline."
+*/
 
 const firebaseConfig = {
   apiKey: "AIzaSyArYR3yq01Arc2xuOfC28uzBGlBRuZxFlI",
@@ -24,7 +35,24 @@ const firebaseConfig = {
 };
 
 const app = initializeApp(firebaseConfig);
-const db = getFirestore(app);
+
+/*
+  Important:
+  initializeFirestore must be called before any getFirestore-style access.
+  Long polling helps when Firestore's default streaming connection is blocked
+  or unreliable on some browsers/networks.
+*/
+const db = initializeFirestore(app, {
+  experimentalAutoDetectLongPolling: true,
+  experimentalForceLongPolling: true,
+  ignoreUndefinedProperties: true
+});
+
+// Best effort: explicitly enable network.
+// This will not hurt if the network is already enabled.
+enableNetwork(db).catch((error) => {
+  console.warn("Firestore network enable warning:", error);
+});
 
 export {
   db,
