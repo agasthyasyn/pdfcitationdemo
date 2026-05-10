@@ -1008,7 +1008,15 @@ function mergeWeakSections(sections) {
     if (!content && !heading) continue;
 
     const isTiny = content.length < 90 && heading !== "General Details";
-    const shouldMerge = isTiny && result.length && !/^\d{1,2}(\.\d{1,2})?\s+/.test(heading);
+    const isImportantHeading = isImportantSourceHeading(heading);
+
+    // Do not merge important maritime headings into the previous section.
+    // This prevents Berth / Salinity / Gangway from being swallowed by Anchorage.
+    const shouldMerge =
+      isTiny &&
+      !isImportantHeading &&
+      result.length &&
+      !/^\d{1,2}(\.\d{1,2})?\s+/.test(heading);
 
     if (shouldMerge) {
       const previous = result[result.length - 1];
@@ -1021,6 +1029,14 @@ function mergeWeakSections(sections) {
   }
 
   return result;
+}
+
+function isImportantSourceHeading(heading) {
+  const clean = comparable(heading);
+
+  if (!clean) return false;
+
+  return /\b(anchorage|berth|terminal|pier|jetty|salinity|density|gangway|regulations|crew change|shore leave|documents|pre arrival|pilot|pilotage|berthing|un berth|shifting|charts|publications|agents|cargo|vhf|psc inspection)\b/.test(clean);
 }
 
 function extractKeyValueFacts(text) {
@@ -1365,8 +1381,13 @@ function findBestFieldFact(field, facts) {
 
     score = Math.max(score, semanticFieldScore(field.label, fact));
     score = Math.max(score, scoreFieldWithRuleEngine(field, fact));
+    score = Math.max(score, scoreExactFieldKeyMatch(field, fact));
 
-    if (score > bestScore) {
+    const shouldReplace =
+      score > bestScore ||
+      (Math.abs(score - bestScore) < 0.001 && isBetterFactForField(field, fact, best));
+
+    if (shouldReplace) {
       bestScore = score;
       best = fact;
     }
@@ -1374,6 +1395,95 @@ function findBestFieldFact(field, facts) {
 
   if (!best || bestScore < getMinimumFieldScore()) return null;
   return { ...best, confidence: Number(bestScore.toFixed(2)) };
+}
+
+function scoreExactFieldKeyMatch(field, fact) {
+  const fieldConcept = getFieldConcept(field?.label || "");
+  const factConcept = getFieldConcept(fact?.key || "");
+
+  if (!fieldConcept || !factConcept) return 0;
+  if (fieldConcept !== factConcept) return 0;
+
+  return Math.min(0.99, 0.9 + (fact.confidence || 0) * 0.08);
+}
+
+function isBetterFactForField(field, candidate, current) {
+  if (!candidate) return false;
+  if (!current) return true;
+
+  return getFactPriorityForField(field, candidate) > getFactPriorityForField(field, current);
+}
+
+function getFactPriorityForField(field, fact) {
+  const fieldConcept = getFieldConcept(field?.label || "");
+  const factConcept = getFieldConcept(fact?.key || "");
+  const value = comparable(fact?.value || "");
+  const evidence = comparable(fact?.evidence || "");
+
+  let priority = Number(fact?.confidence || 0);
+
+  if (fieldConcept && fieldConcept === factConcept) priority += 3;
+
+  // Filename-derived values usually have high confidence and clean evidence.
+  if ((fact?.confidence || 0) >= 0.94) priority += 1.5;
+
+  // Chart/ENC facts must not win for non-chart fields.
+  if (
+    fieldConcept !== "publicationsCharts" &&
+    /\b(enc|chart|charts|publication|publications|admiralty|paper chart|ba chart|alrs|sailing directions)\b/.test(value)
+  ) {
+    priority -= 5;
+  }
+
+  // Port name from filename or clean place text should beat any embedded chart text.
+  if (fieldConcept === "portName" && !/\b(enc|chart|berth|vhf|channel|depth|agent|cargo)\b/.test(value)) {
+    priority += 2;
+  }
+
+  // Berth/terminal values should not be chart references.
+  if (
+    fieldConcept === "berthTerminal" &&
+    /\b(grupo|terminal|berth|pier|jetty|quay|portuario)\b/.test(value)
+  ) {
+    priority += 2;
+  }
+
+  if (evidence.includes("port information") && (fact?.confidence || 0) >= 0.9) {
+    priority += 0.5;
+  }
+
+  return priority;
+}
+
+function getFieldConcept(label) {
+  const clean = comparable(label);
+
+  if (clean.includes("vessel")) return "vesselName";
+
+  if (
+    clean.includes("port") &&
+    !clean.includes("port stay") &&
+    !clean.includes("date")
+  ) {
+    return "portName";
+  }
+
+  if (clean.includes("country")) return "country";
+  if (clean.includes("latitude") || clean.includes("longitude") || clean.includes("position")) return "position";
+  if (clean.includes("time zone") || clean.includes("timezone")) return "timeZone";
+  if (clean.includes("port stay") || clean.includes("date") || clean.includes("arrival")) return "arrivalDate";
+  if (clean.includes("berth") || clean.includes("terminal") || clean.includes("pier") || clean.includes("jetty")) return "berthTerminal";
+  if (clean.includes("cargo operation") || clean.includes("rate")) return "cargoOperations";
+  if (clean === "cargo" || clean.includes("commodity")) return "cargo";
+  if (clean.includes("depth") || clean.includes("draft") || clean.includes("draught") || clean.includes("channel")) return "depthDraft";
+  if (clean.includes("density")) return "density";
+  if (clean.includes("tidal") || clean.includes("tide")) return "tidalRange";
+  if (clean.includes("security")) return "securityLevel";
+  if (clean.includes("vhf") || clean.includes("communication") || clean.includes("radio")) return "vhfCommunication";
+  if (clean.includes("agent") || clean.includes("contact") || clean.includes("agency")) return "agentContact";
+  if (clean.includes("publication") || clean.includes("chart") || clean.includes("enc") || clean.includes("enp")) return "publicationsCharts";
+
+  return "";
 }
 
 function scoreFieldWithRuleEngine(field, fact) {
@@ -1457,18 +1567,16 @@ function isFieldValueCompatible(field, fact) {
   const key = comparable(fact?.key || "");
   const value = normalizeLine(String(fact?.value || ""));
   const valueKey = comparable(value);
-  const evidence = comparable(fact?.evidence || "");
   const all = comparable(`${fact?.key || ""} ${fact?.value || ""} ${fact?.evidence || ""}`);
 
   if (!value || !valueKey) return false;
 
-  const labelIsPortName =
-    label.includes("port") &&
-    !label.includes("port stay") &&
-    !label.includes("date");
+  const concept = getFieldConcept(field?.label || "");
 
   const canBeLong =
-    /agent|contact|publication|chart|additional reference/.test(label);
+    concept === "agentContact" ||
+    concept === "publicationsCharts" ||
+    /additional reference/.test(label);
 
   if (!canBeLong && value.length > 95) return false;
 
@@ -1479,63 +1587,73 @@ function isFieldValueCompatible(field, fact) {
     return false;
   }
 
-  if (label.includes("vessel")) {
-    if (/\b(psc|inspection|pilot|ladder|vhf|channel|cargo|agent|chart|publication|anchorage|depth|draft)\b/.test(all)) return false;
+  if (concept === "vesselName") {
     if (looksLikeDateValue(value)) return false;
+    if (/\b(psc|inspection|pilot|ladder|vhf|channel|cargo|agent|chart|publication|anchorage|depth|draft|enc)\b/.test(all)) return false;
     return value.length <= 70;
   }
 
-  if (labelIsPortName) {
+  if (concept === "portName") {
     if (looksLikeDateValue(value)) return false;
-    if (/\b(pilot|ladder|vhf|channel|cargo|agent|chart|publication|inspection|psc|depth|draft|anchorage|berth name)\b/.test(all) && !/\bport name\b/.test(key)) return false;
     if (/^\d/.test(value)) return false;
     if (value.length > 65) return false;
-    return true;
+
+    // This is the main fix: ENC/chart/berth text must not become Port Name.
+    if (/\b(enc|chart|charts|publication|publications|admiralty|paper chart|ba chart|alrs|sailing directions|berth\s*\d|vhf|channel|depth|draft|agent|cargo|psc|inspection)\b/.test(valueKey)) {
+      return false;
+    }
+
+    // Permit clean port-like values from filename/source.
+    if (key === "port name") return true;
+    if (/^[A-Za-z .'-]+$/.test(value)) return true;
+
+    return false;
   }
 
-  if (label.includes("country")) {
+  if (concept === "country") {
     return looksLikeCountryValue(value);
   }
 
-  if (label.includes("port stay") || label.includes("date")) {
+  if (concept === "arrivalDate") {
     return looksLikeDateValue(value) || /\b(eta|etb|etd|arrival|departure|sailing|anchored)\b/.test(all);
   }
 
-  if (label.includes("berth") || label.includes("terminal") || label.includes("pier")) {
+  if (concept === "berthTerminal") {
     if (valueKey === "berth name") return false;
-    if (/\b(vhf|channel\s*:?\s*ch|charts?|publications?|agent|email|phone|mobile|psc|inspection)\b/.test(valueKey)) return false;
-    if (/\b(pilot ladder|carry onboard|mandatory|paper charts)\b/.test(valueKey)) return false;
-    return value.length <= 120;
+
+    // This is the main fix: chart/ENC values must not become berth/terminal.
+    if (/\b(enc|charts?|publications?|admiralty|paper chart|ba chart|alrs|sailing directions|vhf|channel\s*:?\s*ch|agent|email|phone|mobile|psc|inspection)\b/.test(valueKey)) {
+      return false;
+    }
+
+    if (/\b(pilot ladder|carry onboard|mandatory|paper charts)\b/.test(valueKey)) {
+      return false;
+    }
+
+    return /\b(berth|terminal|pier|jetty|quay|grupo|portuario|buena?ventura terminal)\b/.test(valueKey) || value.length <= 85;
   }
 
-  if (label.includes("cargo")) {
-    if (/\b(vhf|channel|pilot|agent|email|phone|chart|publication|berth depth|psc|inspection)\b/.test(valueKey)) return false;
+  if (concept === "cargo" || concept === "cargoOperations") {
+    if (/\b(vhf|channel|pilot|agent|email|phone|chart|publication|berth depth|psc|inspection|enc)\b/.test(valueKey)) return false;
     return value.length <= 90;
   }
 
-  if (label.includes("depth") || label.includes("draft") || label.includes("draught")) {
-    if (/\b(vhf|channel\s*:?\s*ch|agent|email|phone|chart|publication|psc|inspection)\b/.test(valueKey)) return false;
+  if (concept === "depthDraft") {
+    if (/\b(vhf|channel\s*:?\s*ch|agent|email|phone|chart|publication|enc|psc|inspection)\b/.test(valueKey)) return false;
     return /\b(depth|draft|draught|channel|fairway|anchorage|salinity|density|fresh|salt|brackish|meter|metre|mtrs?|m\b|ft|feet|[0-9])\b/.test(all);
   }
 
-  if (label.includes("vhf") || label.includes("communication")) {
+  if (concept === "vhfCommunication") {
     return /\b(vhf|channel|ch\.?|radio)\b/.test(all) && /\d/.test(all);
   }
 
-  if (label.includes("agent") || label.includes("contact")) {
+  if (concept === "agentContact") {
     if (/\b(pilot ladder|berth depth|cargo rate|vhf channel|paper charts|psc inspection)\b/.test(valueKey)) return false;
     return /\b(agent|agency|contact|email|phone|mobile|tel|tels|@)\b/.test(all) || /\+?\(?\d{2,}/.test(value) || value.length <= 140;
   }
 
-  if (label.includes("publication") || label.includes("chart")) {
-    if (
-      /\b(agent|email|phone|mobile|tel)\b/.test(valueKey) &&
-      !/\b(chart|enc|enp|publication|admiralty|paper chart|ba chart|alrs|np\b)\b/.test(valueKey)
-    ) {
-      return false;
-    }
-
-    return /\b(chart|charts|enc|enp|publication|publications|admiralty|paper chart|ba chart|alrs|sailing directions|np\b)\b/.test(all) || value.length <= 90;
+  if (concept === "publicationsCharts") {
+    return /\b(chart|charts|enc|enp|publication|publications|admiralty|paper chart|ba chart|alrs|sailing directions|np\b)\b/.test(all);
   }
 
   return true;
