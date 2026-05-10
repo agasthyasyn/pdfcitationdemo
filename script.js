@@ -701,7 +701,8 @@ function buildTemplateContract(templatePdf) {
     }))
     .filter((section) => section.heading)
     .filter((section) => !isBlockedText(section.heading))
-    .filter((section) => !isDuplicateTitle(section.heading, title));
+    .filter((section) => !isDuplicateTitle(section.heading, title))
+    .filter((section) => !isBadTemplateHeading(section.heading));
 
   sections = dedupeSections(sections).slice(0, CONFIG.structure.maxTemplateSections);
 
@@ -714,6 +715,30 @@ function buildTemplateContract(templatePdf) {
     headerFields,
     sections
   };
+}
+
+function isBadTemplateHeading(heading) {
+  const text = normalizeLine(heading);
+  const clean = comparable(text);
+
+  if (!text || !clean) return true;
+
+  // Prevent summary table rows from becoming output section headings.
+  if (/\bnot available\b/i.test(text)) return true;
+
+  // Prevent merged header-table labels from becoming fake sections.
+  if (
+    /\b(publications|charts|berth|terminal|cargo|agent|vhf|country|port name|vessel name)\b/i.test(text) &&
+    /\bnot available\b/i.test(text)
+  ) {
+    return true;
+  }
+
+  // Reject headings that are too table-like.
+  const notAvailableCount = (text.match(/not available/gi) || []).length;
+  if (notAvailableCount >= 1) return true;
+
+  return false;
 }
 
 function validateTemplateContract(contract) {
@@ -845,6 +870,7 @@ function detectStructuredHeadings(pages, title) {
     if (isBlockedText(text)) continue;
     if (isDuplicateTitle(text, title)) continue;
     if (looksLikeBodySentence(text)) continue;
+    if (isDocumentListItem(text)) continue;
 
     const patternScore = headingPatternScore(text);
     const fontScore = line.fontSize >= medianFont + 1.2 ? 0.3 : 0;
@@ -862,6 +888,14 @@ function detectStructuredHeadings(pages, title) {
   }
 
   return dedupeHeadingCandidates(candidates);
+}
+
+function isDocumentListItem(text) {
+  const clean = comparable(text);
+
+  if (!clean) return false;
+
+  return /\b(arms and ammunition list|ballast water reporting form|bonded stores list|cargo declaration|cargo manifest|crew effects declaration|crew list|dangerous cargo list|general declaration|last port clearance|list of ports of call|maritime declaration of health|narcotics list|passenger list|ship stores declaration|vaccination list|nil list|nillist)\b/.test(clean);
 }
 
 function headingPatternScore(text) {
@@ -1075,7 +1109,8 @@ function extractKeyValueFacts(text) {
 function looksLikeStandaloneLabel(text) {
   const clean = cleanHeading(text);
   if (!clean || clean.length > 65 || looksLikeBodySentence(clean)) return false;
-  return /^(agent|agents|documents|anchorage|berth|cargo|pilot|pilotage|charts|publications|regulations|services|contacts|port|vessel|time zone|date|arrival|location|customer|client|vendor|invoice)$/i.test(clean);
+
+  return /^(agent|agents|agency|documents|anchorage|berth|berth name|terminal|pier|jetty|cargo|pilot|pilotage|charts|publications|regulations|services|contacts|port|vessel|time zone|date|arrival|location|customer|client|vendor|invoice)$/i.test(clean);
 }
 
 function inferImplicitFacts(fullText, fileName) {
@@ -1621,8 +1656,15 @@ function isFieldValueCompatible(field, fact) {
   if (concept === "berthTerminal") {
     if (valueKey === "berth name") return false;
 
-    // This is the main fix: chart/ENC values must not become berth/terminal.
-    if (/\b(enc|charts?|publications?|admiralty|paper chart|ba chart|alrs|sailing directions|vhf|channel\s*:?\s*ch|agent|email|phone|mobile|psc|inspection)\b/.test(valueKey)) {
+    // Reject chart scale values such as 1:8000.
+    if (/^\d+\s*:\s*\d+$/.test(value)) return false;
+
+    // ENC/chart/publication values must not become berth/terminal.
+    if (/\b(enc|charts?|publications?|admiralty|paper chart|ba chart|alrs|sailing directions)\b/.test(all)) {
+      return false;
+    }
+
+    if (/\b(vhf|channel\s*:?\s*ch|agent|email|phone|mobile|psc|inspection)\b/.test(valueKey)) {
       return false;
     }
 
@@ -1630,7 +1672,7 @@ function isFieldValueCompatible(field, fact) {
       return false;
     }
 
-    return /\b(berth|terminal|pier|jetty|quay|grupo|portuario|buena?ventura terminal)\b/.test(valueKey) || value.length <= 85;
+    return /\b(berth|terminal|pier|jetty|quay|grupo|portuario|buenaventura terminal)\b/.test(all);
   }
 
   if (concept === "cargo" || concept === "cargoOperations") {
@@ -2470,6 +2512,12 @@ function cleanHeading(text) {
 }
 
 function isBlockedText(text) {
+  const raw = normalizeLine(text);
+
+  // Remove PDF extraction noise from ordinal dates like 28th, 1st, 2nd, 3rd.
+  // Sometimes PDF.js extracts only the suffix as a separate loose line.
+  if (/^(st|nd|rd|th)$/i.test(raw)) return true;
+
   const value = comparable(text);
   if (!value) return false;
 
