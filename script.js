@@ -1389,16 +1389,70 @@ async function buildDocumentModel({ sourcePdf, sourceProfile, templateContract }
 }
 
 function buildSummaryRows(headerFields, facts) {
-  return headerFields.map((field) => {
-    const match = findBestFieldFact(field, facts);
-    return {
-      key: field.key,
-      label: field.label,
-      value: match ? match.value : getFallbackValue(),
-      confidence: match ? match.confidence : 0,
-      evidence: match ? match.evidence : ""
-    };
-  });
+  return (headerFields || [])
+    .filter((field) => isUsefulSummaryField(field))
+    .map((field) => {
+      const match = findBestFieldFact(field, facts);
+      const value = normalizeSummaryValue(field, match ? match.value : "");
+
+      return {
+        key: field.key,
+        label: cleanHeading(field.label),
+        value: value || getFallbackValue(),
+        confidence: match && value ? match.confidence : 0,
+        evidence: match && value ? match.evidence : ""
+      };
+    });
+}
+
+function isUsefulSummaryField(field) {
+  const label = cleanHeading(field?.label || "");
+  const clean = comparable(label);
+
+  if (!label || !clean) return false;
+  if (clean === comparable(getFallbackValue())) return false;
+  if (/^not available$/i.test(label)) return false;
+  if (/^port information report$/i.test(label)) return false;
+  if (/^visual reference\s*\d*$/i.test(label)) return false;
+
+  return true;
+}
+
+function normalizeSummaryValue(field, value) {
+  const concept = getFieldConcept(field?.label || "");
+  let clean = normalizeLine(value || "");
+
+  clean = clean
+    .replace(/\bPort Information Report\b/gi, "")
+    .replace(/\bANCHORAGE\s*[:\-]?\s*\d+(?:\.\d+)?\s*m(?:trs?|eters?)?\b/gi, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!clean) return "";
+
+  if (concept === "cargoOperations" && !looksLikeRealCargoOperationRate(clean)) {
+    return getFallbackValue();
+  }
+
+  return clean;
+}
+
+function looksLikeRealCargoOperationRate(value) {
+  const text = normalizeLine(value || "");
+  const clean = comparable(text);
+
+  if (!clean || clean === comparable(getFallbackValue())) return false;
+
+  // Reject plain cargo descriptions being reused as operation/rate.
+  // Example: "Discharged Fertilizers" is cargo, not cargo operation/rate.
+  if (
+    /^(loaded|discharged|loading|discharging)?\s*[a-z ]{3,70}$/i.test(text) &&
+    !/\b(rate|mt\/day|mts\/day|tons\/day|per day|tph|shore|crane|grab|shooter|carried out|delayed|operation)\b/i.test(text)
+  ) {
+    return false;
+  }
+
+  return /\b(rate|mt\s*\/\s*day|mts\s*\/\s*day|tons?\s*\/\s*day|per\s+day|tph|loading was|discharging was|loading carried|discharging carried|shore shooter|shore crane|grab|operation|loading delayed|discharging delayed)\b/i.test(text);
 }
 
 function findBestFieldFact(field, facts) {
@@ -1684,10 +1738,25 @@ function isFieldValueCompatible(field, fact) {
     return /\b(berth|terminal|pier|jetty|quay|grupo|portuario|buenaventura terminal)\b/.test(all);
   }
 
-  if (concept === "cargo" || concept === "cargoOperations") {
-    if (/\b(vhf|channel|pilot|agent|email|phone|chart|publication|berth depth|psc|inspection|enc)\b/.test(valueKey)) return false;
-    return value.length <= 90;
+if (concept === "cargo") {
+  if (/\b(vhf|channel|pilot|agent|email|phone|chart|publication|berth depth|psc|inspection|enc)\b/.test(valueKey)) {
+    return false;
   }
+
+  if (looksLikeRealCargoOperationRate(value)) {
+    return false;
+  }
+
+  return value.length <= 110;
+}
+
+if (concept === "cargoOperations") {
+  if (/\b(vhf|channel|pilot|agent|email|phone|chart|publication|berth depth|psc|inspection|enc)\b/.test(valueKey)) {
+    return false;
+  }
+
+  return looksLikeRealCargoOperationRate(value);
+}
 
   if (concept === "depthDraft") {
     if (/\b(vhf|channel\s*:?\s*ch|agent|email|phone|chart|publication|enc|psc|inspection)\b/.test(valueKey)) return false;
@@ -2935,7 +3004,10 @@ function cleanExtractedText(text) {
     .replace(/\u0000/g, "")
     .split("\n")
     .map(normalizeLine)
+    .filter(Boolean)
     .filter((line) => !isBlockedText(line))
+    .filter((line) => !isChromeOrNoiseLine(line))
+    .filter((line) => !isLooseHeaderLeakLine(line))
     .join("\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
@@ -2956,14 +3028,18 @@ function cleanBusinessContent(text) {
     .replace(/\bSystem Note\b\s*:.*/gi, "")
     .replace(/\bAudit Note\b\s*:.*/gi, "");
 
-  value = value
+  const cleanedLines = value
     .split("\n")
     .map(normalizeLine)
     .filter(Boolean)
     .filter((line) => !isBlockedText(line))
-    .join("\n");
+    .filter((line) => !isChromeOrNoiseLine(line))
+    .filter((line) => !isLooseHeaderLeakLine(line));
 
-  return value.replace(/\n{3,}/g, "\n\n").trim();
+  return collapseRepeatedLines(cleanedLines)
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
 
 function cleanDocumentTitle(text) {
@@ -2988,17 +3064,70 @@ function cleanHeading(text) {
 function isBlockedText(text) {
   const raw = normalizeLine(text);
 
-  // Remove PDF extraction noise from ordinal dates like 28th, 1st, 2nd, 3rd.
-  // Sometimes PDF.js extracts only the suffix as a separate loose line.
   if (/^(st|nd|rd|th)$/i.test(raw)) return true;
 
-  const value = comparable(text);
+  const value = comparable(raw);
   if (!value) return false;
+
+  if (value === "port information report") return true;
+  if (value === "standardized layout missing fields are marked as not available") return true;
 
   return CONFIG.labelsToRemove.some((blocked) => {
     const cleanBlocked = comparable(blocked);
     return value === cleanBlocked || value.includes(cleanBlocked);
   });
+}
+
+function isChromeOrNoiseLine(line) {
+  const text = normalizeLine(line);
+  const clean = comparable(text);
+
+  if (!text || !clean) return true;
+
+  // Removes repeated PDF page title/header/footer text from body flow.
+  if (/^port information report:?$/i.test(text)) return true;
+
+  // Removes generated-template chrome from being treated as source content.
+  if (/\|\s*standardized format$/i.test(text)) return true;
+  if (/^standardized layout\.?\s*missing fields are marked as not available\.?$/i.test(text)) return true;
+
+  // Example: "CS CALLA | Santos, Brazil | 2025"
+  if (/^[A-Z0-9 .\/'-]{2,40}\s*\|.+\|\s*(19|20)\d{2}$/i.test(text)) return true;
+
+  if (/^page\s+\d+(\s+of\s+\d+)?$/i.test(text)) return true;
+
+  return false;
+}
+
+function isLooseHeaderLeakLine(line) {
+  const text = normalizeLine(line);
+
+  // Fixes the current CS Calla issue: "ANCHORAGE 12.5m" appearing after Key Information.
+  if (/^ANCHORAGE\s*[:\-]?\s*\d+(?:\.\d+)?\s*m(?:trs?|eters?)?$/i.test(text)) {
+    return true;
+  }
+
+  // Removes damaged table leftovers like "Not Available Not Available".
+  if (/^not available(?:\s+not available)+$/i.test(text)) {
+    return true;
+  }
+
+  return false;
+}
+
+function collapseRepeatedLines(lines) {
+  const result = [];
+
+  for (const line of lines) {
+    const current = normalizeLine(line);
+    const previous = normalizeLine(result[result.length - 1] || "");
+
+    if (current && comparable(current) !== comparable(previous)) {
+      result.push(current);
+    }
+  }
+
+  return result;
 }
 
 function looksLikeBodySentence(text) {
@@ -3069,10 +3198,68 @@ function weightedTokenOverlap(tokensA, tokensB) {
    ========================================================= */
 
 function splitParagraphs(text) {
-  return cleanBusinessContent(text)
-    .split(/\n{1,}/)
+  const lines = cleanBusinessContent(text)
+    .split(/\n+/)
     .map(normalizeLine)
     .filter(Boolean);
+
+  const paragraphs = [];
+  let buffer = "";
+
+  for (const line of lines) {
+    if (shouldKeepAsStandaloneLine(line)) {
+      if (buffer) {
+        paragraphs.push(buffer);
+        buffer = "";
+      }
+      paragraphs.push(line);
+      continue;
+    }
+
+    if (!buffer) {
+      buffer = line;
+      continue;
+    }
+
+    if (shouldJoinSoftWrappedLine(buffer, line)) {
+      buffer = `${buffer} ${line}`;
+    } else {
+      paragraphs.push(buffer);
+      buffer = line;
+    }
+  }
+
+  if (buffer) paragraphs.push(buffer);
+
+  return paragraphs;
+}
+
+function shouldKeepAsStandaloneLine(line) {
+  const text = normalizeLine(line);
+
+  if (!text) return false;
+
+  if (/^[A-Z][A-Z0-9 /&().'-]{2,}:$/i.test(text)) return true;
+  if (/^\(?\d+\)?[).]\s+/.test(text)) return true;
+  if (/^\([a-z]\)\s+/i.test(text)) return true;
+  if (/^\d{1,2}[º°]/.test(text)) return true;
+  if (/^(Email|Mobile|Phone|Tels?|Fax)\s*:/i.test(text)) return true;
+  if (isDocumentListItem(text)) return true;
+
+  return false;
+}
+
+function shouldJoinSoftWrappedLine(previous, current) {
+  const prev = normalizeLine(previous);
+  const line = normalizeLine(current);
+
+  if (!prev || !line) return false;
+
+  if (shouldKeepAsStandaloneLine(line)) return false;
+  if (/[.!?:]$/.test(prev)) return false;
+  if (/^[A-Z][A-Z0-9 /&().'-]{2,}:$/i.test(prev)) return false;
+
+  return true;
 }
 
 function wrapTextToWidth(text, font, size, maxWidth) {
@@ -3216,10 +3403,19 @@ function fixKnownPdfJoinIssues(value) {
     .replace(/\bChannel16\b/gi, "Channel 16")
     .replace(/\bPassengerList\b/gi, "Passenger List")
     .replace(/\bNillist\b/gi, "Nil list")
+    .replace(/\bpre\s*[-–—]?\s*arrival\b/gi, "pre-arrival")
     .replace(/\bprearrival\b/gi, "pre-arrival")
     .replace(/\bincase\b/gi, "in case")
+    .replace(/\bcompulsoryfor\b/gi, "compulsory for")
+    .replace(/\bpaper charts\s*[-–—]?\s*Agents\b/gi, "paper charts - Agents")
+    .replace(/\banchorage\s*[-–—]?\s*Pilot\b/gi, "anchorage - Pilot")
+    .replace(/\bSalinity Of WaterFresh\b/gi, "Salinity Of Water Fresh")
     .replace(/\bo’clock\b/gi, "o'clock")
+    .replace(/\bEmail:([^\s])/gi, "Email: $1")
+    .replace(/\bMobile:([^\s])/gi, "Mobile: $1")
+    .replace(/\bTels:([^\s])/gi, "Tels: $1")
     .replace(/\s+([,.;:])/g, "$1")
+    .replace(/\s*\/\s*/g, " / ")
     .replace(/\s+/g, " ")
     .trim();
 }
