@@ -7,7 +7,7 @@ pdfjsLib.GlobalWorkerOptions.workerSrc =
 const { PDFDocument, StandardFonts, rgb } = window.PDFLib;
 
 /* =========================================================
-   RESTORED SAMPLE-DRIVEN FORMATTER v2.1 - UI STATUS FIX
+   RESTORED SAMPLE-DRIVEN FORMATTER v2.2 - HEADER GUARDRAILS
    =========================================================
 
    What this script does:
@@ -1228,6 +1228,7 @@ function findBestFieldFact(field, facts) {
 
   for (const fact of facts) {
     if (!isAcceptableFactValue(fact.value)) continue;
+    if (!isFieldValueCompatible(field, fact)) continue;
 
     const factText = `${fact.key} ${fact.value} ${fact.evidence || ""}`;
     const haystack = comparable(factText);
@@ -1306,6 +1307,93 @@ function isAcceptableFactValue(value) {
   if (/^(n\/?a|nil|null|none|unknown)$/i.test(clean)) return false;
 
   return true;
+}
+
+function isFieldValueCompatible(field, fact) {
+  const label = comparable(field?.label || "");
+  const key = comparable(fact?.key || "");
+  const value = normalizeLine(String(fact?.value || ""));
+  const valueKey = comparable(value);
+  const evidence = comparable(fact?.evidence || "");
+  const all = comparable(`${fact?.key || ""} ${fact?.value || ""} ${fact?.evidence || ""}`);
+
+  if (!value || !valueKey) return false;
+
+  // Generic protection: Key Information values should not absorb long instructions.
+  // Agent/contact and publications can be longer, because they may contain addresses/emails/charts.
+  const canBeLong = /agent|contact|publication|chart|additional reference/.test(label);
+  if (!canBeLong && value.length > 95) return false;
+
+  // Reject obvious operational paragraphs as header values.
+  if (!canBeLong && /\b(mandatory|prepared from|carry onboard|required for|should send|should establish|compulsory for|disembarking|dangerous|inflammable)\b/i.test(value)) {
+    return false;
+  }
+
+  // Reject when the extracted key itself belongs to another field concept.
+  if (label.includes("vessel") && /\b(psc|inspection|pilot|ladder|vhf|channel|cargo|agent|chart|publication)\b/.test(all)) return false;
+  if (label.includes("port") && /\b(pilot|ladder|vhf|channel|cargo|agent|chart|publication|inspection|psc)\b/.test(all) && !/\bport\b/.test(key)) return false;
+  if (label.includes("country") && !looksLikeCountryValue(value)) return false;
+
+  if (label.includes("port stay") || label.includes("date")) {
+    return looksLikeDateValue(value) || /\b(eta|etb|etd|arrival|departure|sailing|anchored)\b/.test(all);
+  }
+
+  if (label.includes("berth") || label.includes("terminal") || label.includes("pier")) {
+    if (/\b(vhf|channel\s*:?\s*ch|charts?|publications?|agent|email|phone|mobile|psc|inspection)\b/.test(valueKey)) return false;
+    if (/\b(pilot ladder|carry onboard|mandatory|paper charts)\b/.test(valueKey)) return false;
+    return value.length <= 120;
+  }
+
+  if (label.includes("cargo")) {
+    if (/\b(vhf|channel|pilot|agent|email|phone|chart|publication|berth depth|psc|inspection)\b/.test(valueKey)) return false;
+    return value.length <= 90;
+  }
+
+  if (label.includes("depth") || label.includes("draft") || label.includes("draught")) {
+    if (/\b(vhf|channel\s*:?\s*ch|agent|email|phone|chart|publication|psc|inspection)\b/.test(valueKey)) return false;
+    return /\b(depth|draft|draught|channel|fairway|anchorage|salinity|density|fresh|salt|brackish|meter|metre|mtrs?|m\b|ft|feet|[0-9])\b/.test(all);
+  }
+
+  if (label.includes("vhf") || label.includes("communication")) {
+    return /\b(vhf|channel|ch\.?|radio)\b/.test(all) && /\d/.test(all);
+  }
+
+  if (label.includes("agent") || label.includes("contact")) {
+    if (/\b(pilot ladder|berth depth|cargo rate|vhf channel|paper charts|psc inspection)\b/.test(valueKey)) return false;
+    return /\b(agent|agency|contact|email|phone|mobile|tel|tels|@)\b/.test(all) || /\+?\(?\d{2,}/.test(value) || value.length <= 140;
+  }
+
+  if (label.includes("publication") || label.includes("chart")) {
+    if (/\b(agent|email|phone|mobile|tel)\b/.test(valueKey) && !/\b(chart|enc|enp|publication|admiralty|paper chart|ba chart|alrs|np\b)\b/.test(valueKey)) return false;
+    return /\b(chart|charts|enc|enp|publication|publications|admiralty|paper chart|ba chart|alrs|sailing directions|np\b)\b/.test(all) || value.length <= 90;
+  }
+
+  return true;
+}
+
+function looksLikeDateValue(value) {
+  const text = normalizeLine(value);
+  return /\b\d{1,2}[\-/ ](?:\d{1,2}|jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[\-/ ]\d{2,4}\b/i.test(text) ||
+    /\b\d{1,2}\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\s+\d{2,4}\b/i.test(text) ||
+    /\b(20\d{2}|19\d{2})\b/.test(text);
+}
+
+function looksLikeCountryValue(value) {
+  const text = normalizeLine(value);
+  const key = comparable(text);
+  if (!text || text.length > 45 || /\d/.test(text)) return false;
+  if (text.split(/\s+/).length > 4) return false;
+
+  const knownCountries = [
+    "argentina", "australia", "brazil", "canada", "chile", "china", "colombia", "india", "indonesia",
+    "japan", "korea", "mexico", "panama", "peru", "singapore", "spain", "usa", "united states",
+    "uruguay", "venezuela", "vietnam", "south africa", "uae", "united arab emirates"
+  ];
+
+  if (knownCountries.some((country) => key === comparable(country))) return true;
+
+  // Allow a clean country-like proper noun when not in the known list.
+  return /^[A-Z][A-Za-z .'-]+$/.test(text);
 }
 
 function semanticFieldScore(label, fact) {
