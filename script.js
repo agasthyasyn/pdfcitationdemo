@@ -1361,13 +1361,21 @@ async function buildDocumentModel({ sourcePdf, sourceProfile, templateContract }
     }
   }
 
-  const finalSections = mappedSections
+  let finalSections = mappedSections
     .map((section) => ({ ...section, blocks: mergeTextBlocks(section.blocks) }))
     .filter((section) => section.blocks.some((block) => block.type === "text" && block.text.trim()));
+
+  finalSections = normalizeSectionTextBlocks(finalSections);
+  finalSections = rebalancePortInformationSections(finalSections);
+
+  finalSections = finalSections.filter((section) =>
+    section.blocks.some((block) => block.type === "text" && block.text.trim())
+  );
 
   await attachVisualsToSections({ sourcePdf, sections: finalSections });
 
   return {
+    
     sourceFileName: sourcePdf.fileName,
     title: buildOutputTitle(sourcePdf, sourceProfile),
     pageCount: sourcePdf.pageCount,
@@ -1847,28 +1855,70 @@ function semanticBoost(templateHeading, sourceText) {
   const s = comparable(sourceText);
 
   const groups = [
-    { labels: ["key information", "summary", "basic details"], keys: ["vessel", "port", "country", "cargo", "agent", "time zone"] },
-    { labels: ["visual", "image", "reference"], keys: ["visual reference", "image", "figure", "map", "diagram", "photo"] },
-    { labels: ["overview", "about"], keys: ["overview", "about", "located", "port is"] },
-    { labels: ["arrival", "port stay", "date"], keys: ["arrival", "eta", "etb", "etd", "notice", "pilot station", "date of arrival"] },
-    { labels: ["anchorage"], keys: ["anchorage", "anchor", "anchored"] },
-    { labels: ["pilotage", "approach", "navigation"], keys: ["pilot", "vhf", "channel", "boarding", "ladder", "towage", "tug", "navigation"] },
-    { labels: ["berth", "terminal", "depth"], keys: ["berth", "terminal", "jetty", "depth", "draft", "quay", "salinity"] },
-    { labels: ["cargo", "operations"], keys: ["cargo", "loading", "discharging", "shore", "scale", "rate"] },
-    { labels: ["agent", "contact"], keys: ["agent", "agents", "agency", "email", "phone", "mobile", "contact"] },
-    { labels: ["document", "formalities", "pre arrival"], keys: ["documents", "crew list", "declaration", "certificate", "manifest", "passport", "ballast"] },
-    { labels: ["regulation", "security", "health", "shore leave", "crew change"], keys: ["regulations", "shore leave", "crew", "security", "health", "permitted", "inspection", "psc"] },
-    { labels: ["services", "supplies", "waste"], keys: ["garbage", "bunker", "fresh water", "sludge", "stores", "provisions", "waste"] },
-    { labels: ["publication", "chart"], keys: ["charts", "publications", "enc", "enp", "pilot vol"] },
-    { labels: ["remarks", "experience", "notes", "detailed"], keys: ["remarks", "note", "general information", "additional"] }
+    {
+      labels: ["key information", "summary", "basic details"],
+      keys: ["vessel", "port", "country", "cargo", "agent", "time zone"]
+    },
+    {
+      labels: ["overview", "about"],
+      keys: ["overview", "about", "located", "port is"]
+    },
+    {
+      labels: ["arrival", "port stay", "date"],
+      keys: ["arrival", "eta", "etb", "etd", "notice", "pilot station", "date of arrival"]
+    },
+    {
+      labels: ["anchorage"],
+      keys: ["anchorage", "anchor", "anchored", "outer anchorage", "depth at anchorage"]
+    },
+    {
+      labels: ["pilotage", "approach", "navigation", "pilot", "vhf", "communication"],
+      keys: ["pilot", "pilotage", "vhf", "channel", "boarding", "ladder", "towage", "tug", "navigation", "notice of eta", "pilot station"]
+    },
+    {
+      labels: ["berth", "terminal", "depth", "density", "salinity", "gangway"],
+      keys: ["berth", "terminal", "jetty", "depth", "draft", "quay", "salinity", "density", "gangway", "ship gangway"]
+    },
+    {
+      labels: ["cargo", "operations"],
+      keys: ["cargo", "loading", "discharging", "shore", "scale", "rate"]
+    },
+    {
+      labels: ["agent", "contact"],
+      keys: ["agent", "agents", "agency", "email", "phone", "mobile", "contact", "tels", "calle"]
+    },
+    {
+      labels: ["document", "formalities", "pre arrival"],
+      keys: ["documents", "crew list", "declaration", "certificate", "manifest", "passport", "ballast", "pre arrival", "imo"]
+    },
+    {
+      labels: ["regulation", "security", "health", "shore leave", "crew change", "psc"],
+      keys: ["regulations", "shore leave", "crew", "security", "health", "permitted", "inspection", "psc", "shore pass"]
+    },
+    {
+      labels: ["services", "supplies", "waste"],
+      keys: ["garbage", "bunker", "fresh water", "sludge", "stores", "provisions", "waste"]
+    },
+    {
+      labels: ["publication", "chart", "charts", "enc"],
+      keys: ["charts", "publications", "enc", "enp", "pilot vol", "paper chart", "admiralty", "sailing directions"]
+    },
+    {
+      labels: ["remarks", "experience", "notes", "detailed"],
+      keys: ["remarks", "note", "general information", "additional"]
+    }
   ];
 
   let boost = 0;
+
   for (const group of groups) {
     const headingHit = group.labels.some((label) => h.includes(label));
     if (!headingHit) continue;
+
     const sourceHits = group.keys.filter((key) => s.includes(key)).length;
-    if (sourceHits) boost = Math.max(boost, Math.min(0.9, 0.25 + sourceHits * 0.1));
+    if (sourceHits) {
+      boost = Math.max(boost, Math.min(0.95, 0.28 + sourceHits * 0.11));
+    }
   }
 
   return boost;
@@ -1977,6 +2027,281 @@ async function attachVisualsToSections({ sourcePdf, sections }) {
       pageNumber: visual.pageNumber
     });
   }
+}
+
+function normalizeSectionTextBlocks(sections) {
+  return sections.map((section) => ({
+    ...section,
+    heading: fixKnownPdfJoinIssues(section.heading),
+    blocks: section.blocks.map((block) => {
+      if (block.type !== "text") return block;
+
+      return {
+        ...block,
+        text: cleanBusinessContent(
+          block.text
+            .split("\n")
+            .map((line) => fixKnownPdfJoinIssues(line))
+            .join("\n")
+        )
+      };
+    })
+  }));
+}
+
+function rebalancePortInformationSections(sections) {
+  const notesSection = sections.find((section) =>
+    /detailed notes|remarks|notes/i.test(section.heading)
+  );
+
+  if (!notesSection) return sections;
+
+  const noteText = getSectionText(notesSection);
+  if (!noteText) return sections;
+
+  const lines = noteText
+    .split("\n")
+    .map((line) => normalizeLine(line))
+    .filter(Boolean);
+
+  const buckets = {
+    agents: [],
+    publications: [],
+    pilotage: [],
+    berth: [],
+    regulations: [],
+    documents: []
+  };
+
+  const remaining = [];
+  let activeConcept = "";
+
+  for (const line of lines) {
+    if (isRepeatedTitleLine(line)) {
+      activeConcept = "";
+      continue;
+    }
+
+    if (isKeyInformationDuplicateLine(line)) {
+      activeConcept = "";
+      continue;
+    }
+
+    const concept = classifyPortInformationLine(line, activeConcept);
+
+    if (concept && buckets[concept]) {
+      buckets[concept].push(line);
+      activeConcept = concept;
+      continue;
+    }
+
+    remaining.push(line);
+    activeConcept = "";
+  }
+
+  appendLinesToSection(sections, "Agents / Contacts", buckets.agents);
+  appendLinesToSection(sections, "Publications / Charts", buckets.publications);
+  appendLinesToSection(sections, "Pilotage / Navigation / VHF", buckets.pilotage);
+  appendLinesToSection(sections, "Berth / Terminal / Density", buckets.berth);
+  appendLinesToSection(sections, "Regulations / Security / Health", buckets.regulations);
+  appendLinesToSection(sections, "Pre-Arrival Documents / Formalities", buckets.documents);
+
+  notesSection.blocks = remaining.length
+    ? [
+        {
+          type: "text",
+          text: cleanBusinessContent(remaining.join("\n")),
+          sourceHeading: notesSection.heading,
+          pageNumbers: notesSection.pageNumbers || []
+        }
+      ]
+    : [];
+
+  return sections;
+}
+
+function getSectionText(section) {
+  return (section.blocks || [])
+    .filter((block) => block.type === "text")
+    .map((block) => block.text || "")
+    .join("\n")
+    .trim();
+}
+
+function appendLinesToSection(sections, heading, lines) {
+  const cleanLines = Array.from(
+    new Set(
+      (lines || [])
+        .map((line) => normalizeLine(line))
+        .filter(Boolean)
+    )
+  );
+
+  if (!cleanLines.length) return;
+
+  const target = ensureOutputSection(sections, heading);
+  const existingText = comparable(getSectionText(target));
+
+  const newLines = cleanLines.filter((line) => {
+    const clean = comparable(line);
+    return clean && !existingText.includes(clean);
+  });
+
+  if (!newLines.length) return;
+
+  target.blocks.push({
+    type: "text",
+    text: cleanBusinessContent(newLines.join("\n")),
+    sourceHeading: heading,
+    pageNumbers: []
+  });
+}
+
+function ensureOutputSection(sections, heading) {
+  const existing = sections.find((section) =>
+    sameMeaning(section.heading, heading) ||
+    getSectionConcept(section.heading) === getSectionConcept(heading)
+  );
+
+  if (existing) return existing;
+
+  const notesIndex = sections.findIndex((section) =>
+    /detailed notes|remarks|notes/i.test(section.heading)
+  );
+
+  const insertIndex = notesIndex >= 0 ? notesIndex : sections.length;
+
+  const section = {
+    id: `generated-section-${comparable(heading).replace(/\s+/g, "-") || sections.length + 1}`,
+    order: insertIndex + 1,
+    heading,
+    blocks: [],
+    matchedSourceIds: [],
+    score: 0.7,
+    pageNumbers: []
+  };
+
+  sections.splice(insertIndex, 0, section);
+
+  return section;
+}
+
+function classifyPortInformationLine(line, activeConcept = "") {
+  const text = normalizeLine(line);
+  const clean = comparable(text);
+
+  if (!clean) return "";
+
+  if (/^agents?:?$/i.test(text)) return "agents";
+  if (/^(charts?\s*\/\s*publications?|publications?\s*\/\s*charts?)$/i.test(text)) return "publications";
+  if (/^enc:?$/i.test(text)) return "publications";
+
+  if (/^documents?:?$/i.test(text)) return "documents";
+  if (/^pre[-\s]?arrival docs required/i.test(text)) return "documents";
+  if (isDocumentListItem(text)) return "documents";
+
+  if (/^pilot\b/i.test(text)) return "pilotage";
+  if (/^berthing\/un-?berth\/?\s*shifting/i.test(text)) return "pilotage";
+  if (/^berthing\/unberthing/i.test(text)) return "pilotage";
+  if (/^combination pilot/i.test(text)) return "pilotage";
+  if (/^pilot boarding/i.test(text)) return "pilotage";
+  if (/^\(\d+\)\s*pilotage/i.test(text)) return "pilotage";
+  if (/^\(\d+\)\s*notice of eta/i.test(text)) return "pilotage";
+  if (/^vessels should establish vhf/i.test(text)) return "pilotage";
+
+  if (/^berth:?$/i.test(text)) return "berth";
+  if (/^berth name$/i.test(text)) return "berth";
+  if (/^grupo portuario terminal$/i.test(text)) return "berth";
+  if (/^salinity of water$/i.test(text)) return "berth";
+  if (/^fresh\s*\(/i.test(text)) return "berth";
+  if (/^buenaventura terminal$/i.test(text)) return "berth";
+  if (/^gangway arrangements$/i.test(text)) return "berth";
+  if (/^ship gangway$/i.test(text)) return "berth";
+
+  if (/^psc inspection/i.test(text)) return "regulations";
+  if (/^regulations?\s*\/\s*crew change/i.test(text)) return "regulations";
+  if (/^shore leave/i.test(text)) return "regulations";
+
+  if (/\b(email|mobile|tels?|telephone|phone|calle|edif|gerente|naves)\b/i.test(text)) {
+    return activeConcept === "agents" || activeConcept === "" ? "agents" : activeConcept;
+  }
+
+  if (/\b(enc units|paper charts?|enp\d+|admiralty|sailing directions|pilot vol|rents the same|cost of usd)\b/i.test(text)) {
+    return "publications";
+  }
+
+  if (/\b(vhf channel|pilot station|pilot ladder|port captain|eta|draught|passengers|dangerous|inflammable|international regulations)\b/i.test(text)) {
+    return "pilotage";
+  }
+
+  if (/^\([a-d]\)\s+/i.test(text) && activeConcept === "pilotage") {
+    return "pilotage";
+  }
+
+  if (/^\(\d+\)\s+/i.test(text) && activeConcept === "pilotage") {
+    return "pilotage";
+  }
+
+  if (/\b(grupo portuario|terminal|salinity|gangway|ship gangway|fresh\s*\d{3,})\b/i.test(text)) {
+    return "berth";
+  }
+
+  if (/\b(crew to carry shore pass|shore pass|shore leave permitted)\b/i.test(text)) {
+    return "regulations";
+  }
+
+  if (activeConcept === "agents" && !isLikelyNewPortSectionHeading(text)) return "agents";
+  if (activeConcept === "publications" && !isLikelyNewPortSectionHeading(text)) return "publications";
+  if (activeConcept === "pilotage" && !isLikelyNewPortSectionHeading(text)) return "pilotage";
+  if (activeConcept === "berth" && !isLikelyNewPortSectionHeading(text)) return "berth";
+  if (activeConcept === "regulations" && !isLikelyNewPortSectionHeading(text)) return "regulations";
+  if (activeConcept === "documents" && isDocumentListItem(text)) return "documents";
+
+  return "";
+}
+
+function isLikelyNewPortSectionHeading(line) {
+  const clean = comparable(line);
+
+  return /^(agents?|charts publications|publications charts|enc|pilot|berthing un berth shifting|anchorage|berth|documents|regulations crew change|psc inspection|cargo|date of arrival|lat long|time zone)$/i.test(clean);
+}
+
+function isRepeatedTitleLine(line) {
+  return /^port information report:?$/i.test(normalizeLine(line));
+}
+
+function isKeyInformationDuplicateLine(line) {
+  const text = normalizeLine(line);
+  const clean = comparable(text);
+
+  if (!clean) return false;
+
+  return (
+    /^date of arrival\b/i.test(text) ||
+    /^lat\s*\/?\s*long\b/i.test(text) ||
+    /^time zone\b/i.test(text) ||
+    /^cargo\b/i.test(text) ||
+    /^buenaventura,\s*colombia:?$/i.test(text) ||
+    /^colombia:?$/i.test(text)
+  );
+}
+
+function getSectionConcept(heading) {
+  const clean = comparable(heading);
+
+  if (!clean) return "";
+
+  if (clean.includes("agent") || clean.includes("contact")) return "agents";
+  if (clean.includes("publication") || clean.includes("chart") || clean.includes("enc")) return "publications";
+  if (clean.includes("pilot") || clean.includes("navigation") || clean.includes("vhf") || clean.includes("communication")) return "pilotage";
+  if (clean.includes("berth") || clean.includes("terminal") || clean.includes("pier") || clean.includes("jetty") || clean.includes("density") || clean.includes("salinity")) return "berth";
+  if (clean.includes("regulation") || clean.includes("security") || clean.includes("health") || clean.includes("crew change") || clean.includes("shore leave") || clean.includes("psc")) return "regulations";
+  if (clean.includes("document") || clean.includes("formalit") || clean.includes("pre arrival")) return "documents";
+  if (clean.includes("anchorage") || clean.includes("anchor")) return "anchorage";
+  if (clean.includes("cargo")) return "cargo";
+  if (clean.includes("detailed") || clean.includes("remark") || clean.includes("note")) return "notes";
+
+  return "";
 }
 
 function buildOutputTitle(sourcePdf, sourceProfile) {
@@ -2719,10 +3044,34 @@ function setStatus(message, type = "") {
    GENERIC HELPERS
    ========================================================= */
 
-function normalizeLine(text) {
-  return String(text || "")
-    .replace(/\r/g, "")
-    .replace(/[\t ]+/g, " ")
+function normalizeLine(value) {
+  let text = String(value || "")
+    .replace(/\u00ad/g, "")
+    .replace(/\uFFFE/g, "")
+    .replace(/\uFFFD/g, "")
+    .replace(/[•●▪]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  text = fixKnownPdfJoinIssues(text);
+
+  return text;
+}
+
+function fixKnownPdfJoinIssues(value) {
+  return String(value || "")
+    .replace(/\bPortuarioterminal\b/gi, "Portuario terminal")
+    .replace(/\bBUENAVENTURATERMINAL\b/g, "BUENAVENTURA TERMINAL")
+    .replace(/\bCombinationPilot\b/gi, "Combination Pilot")
+    .replace(/\bpilotsvia\b/gi, "pilots via")
+    .replace(/\bChannel16\b/gi, "Channel 16")
+    .replace(/\bPassengerList\b/gi, "Passenger List")
+    .replace(/\bNillist\b/gi, "Nil list")
+    .replace(/\bprearrival\b/gi, "pre-arrival")
+    .replace(/\bincase\b/gi, "in case")
+    .replace(/\bo’clock\b/gi, "o'clock")
+    .replace(/\s+([,.;:])/g, "$1")
+    .replace(/\s+/g, " ")
     .trim();
 }
 
