@@ -2523,8 +2523,73 @@ function postProcessPortInformationSections(sections) {
 }
 
 function buildOutputTitle(sourcePdf, sourceProfile) {
-  const title = cleanDocumentTitle(sourceProfile.title || inferDocumentTitle(sourcePdf.fullText, sourcePdf.fileName));
-  return title || cleanDocumentTitle(removePdfExtension(sourcePdf.fileName).replace(/[_-]+/g, " "));
+  const fallbackTitle = "Port Information Report";
+  const fullText = sourcePdf?.fullText || "";
+  const sourceTitle = sourceProfile?.title || "";
+  const inferredTitle = inferDocumentTitle(fullText, sourcePdf?.fileName || "");
+  const candidate = cleanDocumentTitle(sourceTitle || inferredTitle);
+
+  // Port information documents should always carry the report title,
+  // not a detected field value such as Cargo, Agent, Berth, etc.
+  if (looksLikePortInformationDocument(fullText, sourcePdf?.fileName || "")) {
+    return fallbackTitle;
+  }
+
+  if (!candidate || isBadOutputTitle(candidate)) {
+    return fallbackTitle;
+  }
+
+  return candidate;
+}
+
+function looksLikePortInformationDocument(text, fileName = "") {
+  const combined = comparable(`${fileName}\n${text}`);
+
+  return (
+    combined.includes("port information report") ||
+    combined.includes("port information") ||
+    (
+      combined.includes("vessel") &&
+      combined.includes("port") &&
+      (
+        combined.includes("anchorage") ||
+        combined.includes("pilotage") ||
+        combined.includes("berth") ||
+        combined.includes("cargo")
+      )
+    )
+  );
+}
+
+function isBadOutputTitle(title) {
+  const text = normalizeLine(title || "");
+  const clean = comparable(text);
+
+  if (!clean) return true;
+
+  // Reject field-value lines accidentally selected as document title.
+  if (/^(cargo|agent|agents|berth|pier|terminal|anchorage|documents|charts|publications|enc|vhf|time zone|lat\/?\s*long)\s*:/i.test(text)) {
+    return true;
+  }
+
+  // Reject values that are clearly content, not title.
+  if (/\b(discharged|loaded|fertilizers|sugar|cargo|naves|terminal|vhf|enc units)\b/i.test(text)) {
+    return true;
+  }
+
+  // Reject title that looks like a summary-table field.
+  if (
+    clean === "cargo" ||
+    clean === "agents" ||
+    clean === "anchorage" ||
+    clean === "berth" ||
+    clean === "documents" ||
+    clean === "publications"
+  ) {
+    return true;
+  }
+
+  return false;
 }
 
 /* =========================================================
