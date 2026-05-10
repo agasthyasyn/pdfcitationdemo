@@ -1367,6 +1367,7 @@ async function buildDocumentModel({ sourcePdf, sourceProfile, templateContract }
 
   finalSections = normalizeSectionTextBlocks(finalSections);
   finalSections = rebalancePortInformationSections(finalSections);
+  finalSections = postProcessPortInformationSections(finalSections);
 
   finalSections = finalSections.filter((section) =>
     section.blocks.some((block) => block.type === "text" && block.text.trim())
@@ -2032,7 +2033,7 @@ async function attachVisualsToSections({ sourcePdf, sections }) {
 function normalizeSectionTextBlocks(sections) {
   return sections.map((section) => ({
     ...section,
-    heading: fixKnownPdfJoinIssues(section.heading),
+    heading: normalizeOutputHeading(fixKnownPdfJoinIssues(section.heading)),
     blocks: section.blocks.map((block) => {
       if (block.type !== "text") return block;
 
@@ -2047,6 +2048,58 @@ function normalizeSectionTextBlocks(sections) {
       };
     })
   }));
+}
+
+function normalizeOutputHeading(heading) {
+  const text = cleanHeading(heading);
+  const clean = comparable(text);
+
+  if (!clean) return text;
+
+  if (/^agents?$/.test(clean) || clean.includes("agent contact")) {
+    return "Agents / Contacts";
+  }
+
+  if (
+    clean.includes("pilot flag") ||
+    clean === "pilots" ||
+    clean.includes("pilotage") ||
+    clean.includes("pilot navigation") ||
+    clean.includes("vhf communication")
+  ) {
+    return "Pilotage / Navigation / VHF";
+  }
+
+  if (clean.includes("publication") || clean.includes("chart") || clean.includes("enc")) {
+    return "Publications / Charts";
+  }
+
+  if (
+    clean.includes("berth") ||
+    clean.includes("terminal") ||
+    clean.includes("density") ||
+    clean.includes("salinity") ||
+    clean.includes("gangway")
+  ) {
+    return "Berth / Terminal / Density";
+  }
+
+  if (
+    clean.includes("regulation") ||
+    clean.includes("security") ||
+    clean.includes("health") ||
+    clean.includes("shore leave") ||
+    clean.includes("crew change") ||
+    clean.includes("psc")
+  ) {
+    return "Regulations / Security / Health";
+  }
+
+  if (clean.includes("document") || clean.includes("formalities") || clean.includes("pre arrival")) {
+    return "Pre-Arrival Documents / Formalities";
+  }
+
+  return text;
 }
 
 function rebalancePortInformationSections(sections) {
@@ -2191,7 +2244,13 @@ function classifyPortInformationLine(line, activeConcept = "") {
   const clean = comparable(text);
 
   if (!clean) return "";
+    // Header/key-information duplicates should not be dragged into narrative sections.
+  if (/^cargo\s*:/i.test(text)) return "";
+  if (/^date of arrival\s*:/i.test(text)) return "";
+  if (/^lat\s*\/?\s*long\s*:/i.test(text)) return "";
+  if (/^time zone\s*:/i.test(text)) return "";
 
+  
   if (/^agents?:?$/i.test(text)) return "agents";
   if (/^(charts?\s*\/\s*publications?|publications?\s*\/\s*charts?)$/i.test(text)) return "publications";
   if (/^enc:?$/i.test(text)) return "publications";
@@ -2302,6 +2361,96 @@ function getSectionConcept(heading) {
   if (clean.includes("detailed") || clean.includes("remark") || clean.includes("note")) return "notes";
 
   return "";
+}
+
+function postProcessPortInformationSections(sections) {
+  let gangwayLines = [];
+
+  const cleanedSections = sections.map((section) => {
+    const concept = getSectionConcept(section.heading);
+    const nextBlocks = [];
+
+    for (const block of section.blocks || []) {
+      if (block.type !== "text") {
+        nextBlocks.push(block);
+        continue;
+      }
+
+      const lines = cleanBusinessContent(block.text)
+        .split("\n")
+        .map(normalizeLine)
+        .filter(Boolean);
+
+      const kept = [];
+
+      for (const line of lines) {
+        const clean = comparable(line);
+
+        if (!clean) continue;
+
+        // Remove header duplicate from Agents section.
+        if (concept === "agents" && /^cargo\s*:/i.test(line)) {
+          continue;
+        }
+
+        // Ship Gangway belongs with Berth / Terminal / Density, not Regulations.
+        if (concept === "regulations" && /^ship gangway$/i.test(line)) {
+          gangwayLines.push(line);
+          continue;
+        }
+
+        // Do not allow pure heading leftovers inside the wrong sections.
+        if (concept === "agents" && /^(cargo|anchorage|berth|documents|regulations)$/i.test(line)) {
+          continue;
+        }
+
+        if (concept === "publications" && /^(agents?|cargo|berth|documents)$/i.test(line)) {
+          continue;
+        }
+
+        kept.push(line);
+      }
+
+      const cleanedText = cleanBusinessContent(kept.join("\n"));
+
+      if (cleanedText) {
+        nextBlocks.push({
+          ...block,
+          text: cleanedText
+        });
+      }
+    }
+
+    return {
+      ...section,
+      heading: normalizeOutputHeading(section.heading),
+      blocks: nextBlocks
+    };
+  });
+
+  if (gangwayLines.length) {
+    const berthSection = ensureOutputSection(cleanedSections, "Berth / Terminal / Density");
+    const existing = comparable(getSectionText(berthSection));
+
+    const linesToAdd = Array.from(new Set(gangwayLines)).filter((line) => {
+      const clean = comparable(line);
+      return clean && !existing.includes(clean);
+    });
+
+    if (linesToAdd.length) {
+      berthSection.blocks.push({
+        type: "text",
+        text: cleanBusinessContent(linesToAdd.join("\n")),
+        sourceHeading: "Gangway Arrangements",
+        pageNumbers: []
+      });
+    }
+  }
+
+  return cleanedSections.map((section) => ({
+    ...section,
+    blocks: mergeTextBlocks(section.blocks || [])
+  }));
 }
 
 function buildOutputTitle(sourcePdf, sourceProfile) {
