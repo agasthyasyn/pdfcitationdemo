@@ -2980,21 +2980,78 @@ function exportAuditLog() {
 
 function inferDocumentTitle(fullText, fileName) {
   const fileTitle = cleanDocumentTitle(removePdfExtension(fileName).replace(/[_-]+/g, " "));
-  const lines = cleanExtractedText(fullText)
+
+  // Important:
+  // Title detection must read from raw text, not cleanExtractedText().
+  // cleanExtractedText() removes repeated headers from the body,
+  // but the real document title may also appear as a repeated header.
+  const rawLines = String(fullText || "")
+    .replace(/\r/g, "")
+    .replace(/\u0000/g, "")
     .split("\n")
     .map(normalizeLine)
-    .filter(Boolean)
-    .filter((line) => !isBlockedText(line));
+    .filter(Boolean);
 
-  const candidates = lines.slice(0, 30).filter((line) => {
-    if (line.length < 4 || line.length > 130) return false;
-    if (/^page\s+\d+/i.test(line)) return false;
-    if (/^\d{1,2}\.\s+/.test(line)) return false;
-    if (looksLikeBodySentence(line)) return false;
-    return headingPatternScore(line) >= 0.35 || /^[A-Z][A-Za-z0-9 ,/&()'’.-]+$/.test(line);
-  });
+  const candidates = rawLines.slice(0, 25)
+    .map((line) => line.replace(/[:\-–—]+$/g, "").trim())
+    .filter((line) => {
+      if (!line) return false;
+      if (line.length < 4 || line.length > 130) return false;
+      if (/^page\s+\d+/i.test(line)) return false;
+      if (/^\d{1,2}\.\s+/.test(line)) return false;
+      if (looksLikeTitleFieldLine(line)) return false;
+      if (looksLikeBodySentence(line)) return false;
 
-  return candidates.length ? cleanDocumentTitle(candidates[0]) : fileTitle || "Document";
+      return (
+        headingPatternScore(line) >= 0.35 ||
+        /\b(report|information|manual|guide|instructions|summary|checklist)\b/i.test(line) ||
+        /^[A-Z][A-Za-z0-9 ,/&()'’.-]+$/.test(line)
+      );
+    });
+
+  const preferredTitle = candidates.find((line) =>
+    /\b(report|information|manual|guide|instructions|summary|checklist)\b/i.test(line)
+  );
+
+  return cleanDocumentTitle(preferredTitle || candidates[0] || fileTitle || "Document");
+}
+
+function looksLikeTitleFieldLine(line) {
+  const text = normalizeLine(line);
+  const clean = comparable(text);
+
+  if (!clean) return true;
+
+  // Reject obvious field-value rows from becoming the document title.
+  if (
+    /^(date of arrival|date|eta|etb|etd|port stay|cargo|agents?|agency|charts?|publications?|enc|lat\s*\/?\s*long|latitude|longitude|time zone|pilot|vhf|anchorage|berth|berth name|pier|terminal|documents?|regulations?|psc inspection|country|port name|vessel name|unlocode|unctad)\s*[:\-–—]/i.test(text)
+  ) {
+    return true;
+  }
+
+  // Reject standalone section/field labels.
+  const blockedTitleLabels = new Set([
+    "cargo",
+    "agent",
+    "agents",
+    "agency",
+    "charts",
+    "publications",
+    "enc",
+    "anchorage",
+    "berth",
+    "berth name",
+    "documents",
+    "regulations",
+    "pilot",
+    "pilotage",
+    "vhf",
+    "time zone",
+    "date of arrival",
+    "lat long"
+  ]);
+
+  return blockedTitleLabels.has(clean);
 }
 
 function cleanExtractedText(text) {
