@@ -1083,10 +1083,118 @@ function inferImplicitFacts(fullText, fileName) {
     facts.push(makeFact("Country", portCountry[2], portCountry[0], 0.76));
   }
 
-  const year = fileTitle.match(/\b(20\d{2}|19\d{2})\b/);
-  if (year) facts.push(makeFact("Year", year[1], fileTitle, 0.7));
+  const fileFacts = inferFileNameFacts(fileTitle);
+
+  if (fileFacts.vessel) {
+    facts.push(makeFact("Vessel Name", fileFacts.vessel, fileTitle, 0.96));
+  }
+
+  if (fileFacts.port) {
+    facts.push(makeFact("Port Name", fileFacts.port, fileTitle, 0.95));
+  }
+
+  if (fileFacts.country) {
+    facts.push(makeFact("Country", fileFacts.country, fileTitle, 0.95));
+  }
+
+  if (fileFacts.year) {
+    facts.push(makeFact("Year", fileFacts.year, fileTitle, 0.8));
+  }
 
   return facts;
+}
+
+function inferFileNameFacts(fileTitle) {
+  const cleaned = cleanHeading(fileTitle)
+    .replace(/\bport information\b/gi, "")
+    .replace(/\bupdated\b/gi, "")
+    .replace(/\(\d+\)/g, "")
+    .replace(/\bcopy\b/gi, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  const yearMatch = cleaned.match(/\b(20\d{2}|19\d{2})\b/);
+  const year = yearMatch ? yearMatch[1] : "";
+
+  const withoutYear = cleaned
+    .replace(/\b(20\d{2}|19\d{2})\b/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  const countries = [
+    "united states",
+    "south africa",
+    "united arab emirates",
+    "argentina",
+    "australia",
+    "brazil",
+    "canada",
+    "chile",
+    "china",
+    "colombia",
+    "india",
+    "indonesia",
+    "japan",
+    "korea",
+    "mexico",
+    "panama",
+    "peru",
+    "singapore",
+    "spain",
+    "uae",
+    "uruguay",
+    "usa",
+    "venezuela",
+    "vietnam"
+  ].sort((a, b) => b.length - a.length);
+
+  const country = countries.find((item) =>
+    comparable(withoutYear).includes(comparable(item))
+  );
+
+  if (!country) {
+    return {
+      vessel: "",
+      port: "",
+      country: "",
+      year
+    };
+  }
+
+  const countryPattern = new RegExp(`\\b${escapeRegExp(country).replace(/\\s+/g, "\\\\s+")}\\b`, "i");
+  const match = withoutYear.match(countryPattern);
+
+  if (!match) {
+    return {
+      vessel: "",
+      port: "",
+      country: titleCase(country),
+      year
+    };
+  }
+
+  const portRaw = withoutYear.slice(0, match.index).trim();
+  const vesselRaw = withoutYear.slice(match.index + match[0].length).trim();
+
+  return {
+    port: cleanHeading(portRaw),
+    country: titleCase(country),
+    vessel: normalizeVesselName(vesselRaw),
+    year
+  };
+}
+
+function normalizeVesselName(value) {
+  return cleanHeading(value)
+    .replace(/\bmv\b/gi, "MV")
+    .replace(/\bm\/v\b/gi, "M/V")
+    .replace(/\bcs\b/gi, "CS")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function escapeRegExp(value) {
+  return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function addFactFromMatch(facts, key, match, groupIndex = 0, transform = null) {
@@ -1306,6 +1414,28 @@ function isAcceptableFactValue(value) {
   if (/^[a-zA-Z]:?$/.test(clean)) return false;
   if (/^(n\/?a|nil|null|none|unknown)$/i.test(clean)) return false;
 
+  const placeholderValues = [
+    "vessel name",
+    "port name",
+    "country",
+    "berth name",
+    "agents",
+    "agent",
+    "documents",
+    "document",
+    "enc",
+    "charts",
+    "chart",
+    "publications",
+    "publication",
+    "cargo",
+    "density",
+    "tidal range",
+    "security level"
+  ];
+
+  if (placeholderValues.includes(normalized)) return false;
+
   return true;
 }
 
@@ -1319,26 +1449,47 @@ function isFieldValueCompatible(field, fact) {
 
   if (!value || !valueKey) return false;
 
-  // Generic protection: Key Information values should not absorb long instructions.
-  // Agent/contact and publications can be longer, because they may contain addresses/emails/charts.
-  const canBeLong = /agent|contact|publication|chart|additional reference/.test(label);
+  const labelIsPortName =
+    label.includes("port") &&
+    !label.includes("port stay") &&
+    !label.includes("date");
+
+  const canBeLong =
+    /agent|contact|publication|chart|additional reference/.test(label);
+
   if (!canBeLong && value.length > 95) return false;
 
-  // Reject obvious operational paragraphs as header values.
-  if (!canBeLong && /\b(mandatory|prepared from|carry onboard|required for|should send|should establish|compulsory for|disembarking|dangerous|inflammable)\b/i.test(value)) {
+  if (
+    !canBeLong &&
+    /\b(mandatory|prepared from|carry onboard|required for|should send|should establish|compulsory for|disembarking|dangerous|inflammable)\b/i.test(value)
+  ) {
     return false;
   }
 
-  // Reject when the extracted key itself belongs to another field concept.
-  if (label.includes("vessel") && /\b(psc|inspection|pilot|ladder|vhf|channel|cargo|agent|chart|publication)\b/.test(all)) return false;
-  if (label.includes("port") && /\b(pilot|ladder|vhf|channel|cargo|agent|chart|publication|inspection|psc)\b/.test(all) && !/\bport\b/.test(key)) return false;
-  if (label.includes("country") && !looksLikeCountryValue(value)) return false;
+  if (label.includes("vessel")) {
+    if (/\b(psc|inspection|pilot|ladder|vhf|channel|cargo|agent|chart|publication|anchorage|depth|draft)\b/.test(all)) return false;
+    if (looksLikeDateValue(value)) return false;
+    return value.length <= 70;
+  }
+
+  if (labelIsPortName) {
+    if (looksLikeDateValue(value)) return false;
+    if (/\b(pilot|ladder|vhf|channel|cargo|agent|chart|publication|inspection|psc|depth|draft|anchorage|berth name)\b/.test(all) && !/\bport name\b/.test(key)) return false;
+    if (/^\d/.test(value)) return false;
+    if (value.length > 65) return false;
+    return true;
+  }
+
+  if (label.includes("country")) {
+    return looksLikeCountryValue(value);
+  }
 
   if (label.includes("port stay") || label.includes("date")) {
     return looksLikeDateValue(value) || /\b(eta|etb|etd|arrival|departure|sailing|anchored)\b/.test(all);
   }
 
   if (label.includes("berth") || label.includes("terminal") || label.includes("pier")) {
+    if (valueKey === "berth name") return false;
     if (/\b(vhf|channel\s*:?\s*ch|charts?|publications?|agent|email|phone|mobile|psc|inspection)\b/.test(valueKey)) return false;
     if (/\b(pilot ladder|carry onboard|mandatory|paper charts)\b/.test(valueKey)) return false;
     return value.length <= 120;
@@ -1364,7 +1515,13 @@ function isFieldValueCompatible(field, fact) {
   }
 
   if (label.includes("publication") || label.includes("chart")) {
-    if (/\b(agent|email|phone|mobile|tel)\b/.test(valueKey) && !/\b(chart|enc|enp|publication|admiralty|paper chart|ba chart|alrs|np\b)\b/.test(valueKey)) return false;
+    if (
+      /\b(agent|email|phone|mobile|tel)\b/.test(valueKey) &&
+      !/\b(chart|enc|enp|publication|admiralty|paper chart|ba chart|alrs|np\b)\b/.test(valueKey)
+    ) {
+      return false;
+    }
+
     return /\b(chart|charts|enc|enp|publication|publications|admiralty|paper chart|ba chart|alrs|sailing directions|np\b)\b/.test(all) || value.length <= 90;
   }
 
@@ -1373,11 +1530,14 @@ function isFieldValueCompatible(field, fact) {
 
 function looksLikeDateValue(value) {
   const text = normalizeLine(value);
-  return /\b\d{1,2}[\-/ ](?:\d{1,2}|jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[\-/ ]\d{2,4}\b/i.test(text) ||
-    /\b\d{1,2}\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\s+\d{2,4}\b/i.test(text) ||
-    /\b(20\d{2}|19\d{2})\b/.test(text);
-}
 
+  return (
+    /\b\d{1,2}[\-/ ](?:\d{1,2}|jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[\-/ ]\d{2,4}\b/i.test(text) ||
+    /\b\d{1,2}\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\s+\d{2,4}\b/i.test(text) ||
+    /\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\s+\d{1,2},?\s+\d{2,4}\b/i.test(text) ||
+    /^\s*(20\d{2}|19\d{2})\s*$/.test(text)
+  );
+}
 function looksLikeCountryValue(value) {
   const text = normalizeLine(value);
   const key = comparable(text);
