@@ -1193,6 +1193,19 @@ function normalizeVesselName(value) {
     .trim();
 }
 
+function titleCase(value) {
+  return String(value || "")
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((word) => {
+      const upperWords = new Set(["usa", "uae", "uk", "us"]);
+      if (upperWords.has(word)) return word.toUpperCase();
+      return word.charAt(0).toUpperCase() + word.slice(1);
+    })
+    .join(" ");
+}
+
 function escapeRegExp(value) {
   return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
