@@ -91,13 +91,22 @@ exports.handler = async function (event) {
       };
     }
 
-    const payload = JSON.parse(event.body || "{}");
+const payload = JSON.parse(event.body || "{}");
 
-    const testText =
-      payload.testText ||
-      "PORT INFORMATION REPORT. Vessel Name: CS Calla. Port Name: Buenaventura. Country: Colombia. Cargo: Discharged Fertilizers.";
+const sourceText = String(payload.sourceText || "").trim();
 
-    const response = await fetch("https://api.openai.com/v1/responses", {
+if (!sourceText) {
+  return {
+    statusCode: 400,
+    headers,
+    body: JSON.stringify({
+      ok: false,
+      error: "sourceText is required. No fallback sample text is allowed."
+    })
+  };
+}
+
+const response = await fetch("https://api.openai.com/v1/responses", {
       method: "POST",
       headers: {
         "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
@@ -150,7 +159,7 @@ Rules:
 - Return JSON only.
 
 Source text:
-${testText}
+${sourceText}
 `
           }
         ]
