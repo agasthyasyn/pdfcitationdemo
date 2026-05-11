@@ -14,17 +14,21 @@ exports.handler = async function (event) {
     };
   }
 
-  if (event.httpMethod === "GET") {
-    return {
-      statusCode: 200,
-      headers,
-      body: JSON.stringify({
-        ok: true,
-        message: "semantic-map function is live",
-        hasOpenAIKey: Boolean(process.env.OPENAI_API_KEY)
-      })
-    };
-  }
+if (event.httpMethod === "GET") {
+  return {
+    statusCode: 200,
+    headers,
+    body: JSON.stringify({
+      ok: true,
+      message: "semantic-map function is live",
+      checkedAt: new Date().toISOString(),
+      hasOpenAIKey: Boolean(process.env.OPENAI_API_KEY),
+      visibleOpenAIKeyNames: Object.keys(process.env).filter((key) =>
+        key.toLowerCase().includes("openai")
+      )
+    })
+  };
+}
 
   if (event.httpMethod !== "POST") {
     return {
