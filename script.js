@@ -349,6 +349,73 @@ async function callSemanticMapper(payload) {
   return data.parsedJson || data.outputText || data;
 }
 
+function buildDocumentModelFromSemanticModel({ semanticModel, sourcePdf, templateContract }) {
+  const fallbackValue = getFallbackValue();
+
+  const aiSummaryRows = Array.isArray(semanticModel?.summaryRows)
+    ? semanticModel.summaryRows
+    : [];
+
+  const summaryRows = (templateContract.headerFields || []).map((field) => {
+    const match = aiSummaryRows.find((row) =>
+      comparable(row.label || "") === comparable(field.label || "")
+    );
+
+    return {
+      key: field.key,
+      label: cleanHeading(field.label),
+      value: normalizeLine(match?.value || fallbackValue),
+      confidence: Number(match?.confidence || 0),
+      evidence: normalizeLine(match?.evidence || "")
+    };
+  });
+
+  const aiSections = Array.isArray(semanticModel?.sections)
+    ? semanticModel.sections
+    : [];
+
+  const sections = aiSections
+    .map((section, index) => {
+      const blocks = Array.isArray(section.blocks)
+        ? section.blocks
+            .filter((block) => block && (block.text || block.content))
+            .map((block) => ({
+              type: "text",
+              text: cleanBusinessContent(block.text || block.content || ""),
+              sourceHeading: section.heading || "",
+              pageNumbers: block.sourcePage ? [block.sourcePage] : []
+            }))
+        : [];
+
+      return {
+        id: `ai-section-${index + 1}`,
+        order: index + 1,
+        heading: cleanHeading(section.heading || `Section ${index + 1}`),
+        blocks,
+        matchedSourceIds: [],
+        score: 1,
+        pageNumbers: uniqueNumbers(blocks.flatMap((block) => block.pageNumbers || []))
+      };
+    })
+    .filter((section) =>
+      section.heading &&
+      section.blocks.some((block) => block.type === "text" && block.text.trim())
+    );
+
+  return {
+    sourceFileName: sourcePdf.fileName,
+    title: cleanDocumentTitle(semanticModel?.title || templateContract.title || sourcePdf.fileName),
+    pageCount: sourcePdf.pageCount,
+    summaryRows,
+    sections,
+    sectionNumbering: true,
+    sourceSectionCount: sections.length,
+    factsDetected: summaryRows.filter((row) => row.value && row.value !== fallbackValue).length,
+    semanticModel,
+    aiWarnings: Array.isArray(semanticModel?.warnings) ? semanticModel.warnings : []
+  };
+}
+
 async function processDocuments() {
   if (!state.templateFile) {
     setStatus("Please upload a sample/template PDF first.", "error");
@@ -396,18 +463,28 @@ for (let i = 0; i < state.sourceFiles.length; i++) {
     console.warn("AI semantic mapping failed. Falling back to JavaScript formatter.", semanticError);
   }
 
+let documentModel = null;
+
+if (semanticModel && Array.isArray(semanticModel.sections)) {
+  documentModel = buildDocumentModelFromSemanticModel({
+    semanticModel,
+    sourcePdf,
+    templateContract
+  });
+
+  console.log("Rendering from AI semantic model for", file.name, documentModel);
+} else {
   const sourceProfile = buildSourceProfile(sourcePdf);
-  const documentModel = await buildDocumentModel({
+  documentModel = await buildDocumentModel({
     sourcePdf,
     sourceProfile,
     templateContract
   });
 
-  // For now, keep AI output attached for inspection only.
-  // We are not rendering from AI yet.
-  documentModel.semanticModel = semanticModel;
+  console.log("Rendering from JavaScript fallback for", file.name, documentModel);
+}
 
-  documents.push(documentModel);
+documents.push(documentModel);
 }
 
 state.documents = documents;
