@@ -453,10 +453,22 @@ for (let i = 0; i < state.sourceFiles.length; i++) {
   let semanticModel = null;
 
   try {
-    semanticModel = await callSemanticMapper({
-      fileName: file.name,
-      testText: sourcePdf.fullText
-    });
+semanticModel = await callSemanticMapper({
+  fileName: file.name,
+  sourceText: sourcePdf.fullText,
+  template: {
+    title: templateContract.title,
+    headerFields: templateContract.headerFields.map((field) => ({
+      key: field.key,
+      label: field.label
+    })),
+    sections: templateContract.sections.map((section) => ({
+      id: section.id,
+      heading: section.heading,
+      order: section.order
+    }))
+  }
+});
 
     console.log("AI Semantic Model for", file.name, semanticModel);
   } catch (semanticError) {
