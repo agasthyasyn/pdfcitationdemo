@@ -373,53 +373,54 @@ async function processDocuments() {
     validateTemplateContract(templateContract);
     state.templateContract = templateContract;
 
-    const documents = [];
+const documents = [];
 
-    for (let i = 0; i < state.sourceFiles.length; i++) {
-      const file = state.sourceFiles[i];
-      setStatus(`Processing ${file.name} (${i + 1} of ${state.sourceFiles.length})...`);
+for (let i = 0; i < state.sourceFiles.length; i++) {
+  const file = state.sourceFiles[i];
+  setStatus(`Processing ${file.name} (${i + 1} of ${state.sourceFiles.length})...`);
 
-const sourcePdf = await extractPdf(file, { collectVisuals: isVisualCaptureEnabled() });
+  const sourcePdf = await extractPdf(file, { collectVisuals: isVisualCaptureEnabled() });
 
-setStatus(`Running AI semantic mapping for ${file.name}...`);
+  setStatus(`Running AI semantic mapping for ${file.name}...`);
 
-let semanticModel = null;
+  let semanticModel = null;
 
-try {
-  semanticModel = await callSemanticMapper({
-    fileName: file.name,
-    testText: sourcePdf.fullText
+  try {
+    semanticModel = await callSemanticMapper({
+      fileName: file.name,
+      testText: sourcePdf.fullText
+    });
+
+    console.log("AI Semantic Model for", file.name, semanticModel);
+  } catch (semanticError) {
+    console.warn("AI semantic mapping failed. Falling back to JavaScript formatter.", semanticError);
+  }
+
+  const sourceProfile = buildSourceProfile(sourcePdf);
+  const documentModel = await buildDocumentModel({
+    sourcePdf,
+    sourceProfile,
+    templateContract
   });
 
-  console.log("AI Semantic Model for", file.name, semanticModel);
-} catch (semanticError) {
-  console.warn("AI semantic mapping failed. Falling back to JavaScript formatter.", semanticError);
+  // For now, keep AI output attached for inspection only.
+  // We are not rendering from AI yet.
+  documentModel.semanticModel = semanticModel;
+
+  documents.push(documentModel);
 }
 
-const sourceProfile = buildSourceProfile(sourcePdf);
-const documentModel = await buildDocumentModel({
-  sourcePdf,
-  sourceProfile,
-  templateContract
-});
+state.documents = documents;
+state.auditLog = buildAuditLog(templateContract, documents);
 
-// For now, keep AI output attached for inspection only.
-// We are not rendering from AI yet.
-documentModel.semanticModel = semanticModel;
+renderPreview(documents);
+renderDetectedDetails(templateContract, documents);
+renderVisualPreview(documents);
 
-documents.push(documentModel);
+els.exportPdfBtn.disabled = false;
+els.exportAuditBtn.disabled = false;
 
-    state.documents = documents;
-    state.auditLog = buildAuditLog(templateContract, documents);
-
-    renderPreview(documents);
-    renderDetectedDetails(templateContract, documents);
-    renderVisualPreview(documents);
-
-    els.exportPdfBtn.disabled = false;
-    els.exportAuditBtn.disabled = false;
-
-    setStatus("Processing complete. Review the preview before exporting.", "success");
+setStatus("Processing complete. Review the preview before exporting.", "success");
   } catch (error) {
     console.error(error);
     setStatus(`Failed: ${error.message}`, "error");
