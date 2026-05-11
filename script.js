@@ -346,7 +346,38 @@ async function callSemanticMapper(payload) {
     throw new Error(data?.error?.message || data?.error || "Semantic mapper failed.");
   }
 
-  return data.parsedJson || data.outputText || data;
+  if (!data.parsedJson || typeof data.parsedJson !== "object") {
+    console.error("Semantic mapper returned non-JSON output:", data);
+    throw new Error("Semantic mapper returned invalid JSON. Processing stopped for this AI model.");
+  }
+
+  return data.parsedJson;
+}
+
+function isUsableSemanticModel(semanticModel) {
+  if (!semanticModel || typeof semanticModel !== "object") return false;
+
+  const summaryRows = Array.isArray(semanticModel.summaryRows)
+    ? semanticModel.summaryRows
+    : [];
+
+  const sections = Array.isArray(semanticModel.sections)
+    ? semanticModel.sections
+    : [];
+
+  const hasAnySummaryValue = summaryRows.some((row) =>
+    normalizeLine(row?.value || "") &&
+    comparable(row?.value || "") !== comparable(getFallbackValue())
+  );
+
+  const hasAnySectionContent = sections.some((section) =>
+    Array.isArray(section.blocks) &&
+    section.blocks.some((block) =>
+      normalizeLine(block?.text || block?.content || "")
+    )
+  );
+
+  return hasAnySummaryValue || hasAnySectionContent;
 }
 
 function buildDocumentModelFromSemanticModel({ semanticModel, sourcePdf, templateContract }) {
@@ -356,19 +387,28 @@ function buildDocumentModelFromSemanticModel({ semanticModel, sourcePdf, templat
     ? semanticModel.summaryRows
     : [];
 
-  const summaryRows = (templateContract.headerFields || []).map((field) => {
-    const match = aiSummaryRows.find((row) =>
-      comparable(row.label || "") === comparable(field.label || "")
-    );
+const summaryRows = (templateContract.headerFields || []).map((field) => {
+  const fieldKey = comparable(field.key || "");
+  const fieldLabel = comparable(field.label || "");
 
-    return {
-      key: field.key,
-      label: cleanHeading(field.label),
-      value: normalizeLine(match?.value || fallbackValue),
-      confidence: Number(match?.confidence || 0),
-      evidence: normalizeLine(match?.evidence || "")
-    };
+  const match = aiSummaryRows.find((row) => {
+    const rowKey = comparable(row.key || "");
+    const rowLabel = comparable(row.label || "");
+
+    return (
+      (rowKey && fieldKey && rowKey === fieldKey) ||
+      (rowLabel && fieldLabel && rowLabel === fieldLabel)
+    );
   });
+
+  return {
+    key: field.key,
+    label: cleanHeading(field.label),
+    value: normalizeLine(match?.value || fallbackValue),
+    confidence: Number(match?.confidence || 0),
+    evidence: normalizeLine(match?.evidence || "")
+  };
+});
 
   const aiSections = Array.isArray(semanticModel?.sections)
     ? semanticModel.sections
@@ -477,7 +517,7 @@ semanticModel = await callSemanticMapper({
 
 let documentModel = null;
 
-if (semanticModel && Array.isArray(semanticModel.sections)) {
+if (isUsableSemanticModel(semanticModel)) {
   documentModel = buildDocumentModelFromSemanticModel({
     semanticModel,
     sourcePdf,
@@ -486,6 +526,11 @@ if (semanticModel && Array.isArray(semanticModel.sections)) {
 
   console.log("Rendering from AI semantic model for", file.name, documentModel);
 } else {
+  console.warn("AI semantic model was missing or too weak. Falling back to JavaScript formatter.", {
+    fileName: file.name,
+    semanticModel
+  });
+
   const sourceProfile = buildSourceProfile(sourcePdf);
   documentModel = await buildDocumentModel({
     sourcePdf,
