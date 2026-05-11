@@ -155,7 +155,6 @@ const response = await fetch("https://api.openai.com/v1/responses", {
           {
             role: "user",
             content: `
-            
 You are the document brain for a PDF formatting tool.
 
 Your job is to create a clean, robust, professional document model by adapting the messy source document into the detected sample/template structure.
