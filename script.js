@@ -330,6 +330,25 @@ function isVisualCaptureEnabled() {
   return detectionValue && ruleEngineValue;
 }
 
+async function callSemanticMapper(payload) {
+  const response = await fetch("/.netlify/functions/semantic-map", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(payload)
+  });
+
+  const data = await response.json();
+
+  if (!response.ok || !data.ok) {
+    console.error("Semantic mapper failed:", data);
+    throw new Error(data?.error?.message || data?.error || "Semantic mapper failed.");
+  }
+
+  return data.parsedJson || data.outputText || data;
+}
+
 async function processDocuments() {
   if (!state.templateFile) {
     setStatus("Please upload a sample/template PDF first.", "error");
@@ -360,16 +379,35 @@ async function processDocuments() {
       const file = state.sourceFiles[i];
       setStatus(`Processing ${file.name} (${i + 1} of ${state.sourceFiles.length})...`);
 
-      const sourcePdf = await extractPdf(file, { collectVisuals: isVisualCaptureEnabled() });
-      const sourceProfile = buildSourceProfile(sourcePdf);
-      const documentModel = await buildDocumentModel({
-        sourcePdf,
-        sourceProfile,
-        templateContract
-      });
+const sourcePdf = await extractPdf(file, { collectVisuals: isVisualCaptureEnabled() });
 
-      documents.push(documentModel);
-    }
+setStatus(`Running AI semantic mapping for ${file.name}...`);
+
+let semanticModel = null;
+
+try {
+  semanticModel = await callSemanticMapper({
+    fileName: file.name,
+    testText: sourcePdf.fullText
+  });
+
+  console.log("AI Semantic Model for", file.name, semanticModel);
+} catch (semanticError) {
+  console.warn("AI semantic mapping failed. Falling back to JavaScript formatter.", semanticError);
+}
+
+const sourceProfile = buildSourceProfile(sourcePdf);
+const documentModel = await buildDocumentModel({
+  sourcePdf,
+  sourceProfile,
+  templateContract
+});
+
+// For now, keep AI output attached for inspection only.
+// We are not rendering from AI yet.
+documentModel.semanticModel = semanticModel;
+
+documents.push(documentModel);
 
     state.documents = documents;
     state.auditLog = buildAuditLog(templateContract, documents);
