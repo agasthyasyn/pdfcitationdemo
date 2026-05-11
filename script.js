@@ -380,18 +380,20 @@ function isUsableSemanticModel(semanticModel) {
   return hasAnySummaryValue || hasAnySectionContent;
 }
 
-function buildDocumentModelFromSemanticModel({ semanticModel, sourcePdf, templateContract }) {
-  const fallbackValue = getFallbackValue();
-
+function buildDocumentModelFromSemanticModel({ semanticModel, sourcePdf, templateContract, sourceProfile = null }) {  const fallbackValue = getFallbackValue();
   const aiSummaryRows = Array.isArray(semanticModel?.summaryRows)
     ? semanticModel.summaryRows
     : [];
+
+const fallbackSummaryRows = sourceProfile
+  ? buildSummaryRows(templateContract.headerFields || [], sourceProfile.keyValueFacts || [])
+  : [];
 
 const summaryRows = (templateContract.headerFields || []).map((field) => {
   const fieldKey = comparable(field.key || "");
   const fieldLabel = comparable(field.label || "");
 
-  const match = aiSummaryRows.find((row) => {
+  const aiMatch = aiSummaryRows.find((row) => {
     const rowKey = comparable(row.key || "");
     const rowLabel = comparable(row.label || "");
 
@@ -401,12 +403,45 @@ const summaryRows = (templateContract.headerFields || []).map((field) => {
     );
   });
 
+  const fallbackMatch = fallbackSummaryRows.find((row) => {
+    const rowKey = comparable(row.key || "");
+    const rowLabel = comparable(row.label || "");
+
+    return (
+      (rowKey && fieldKey && rowKey === fieldKey) ||
+      (rowLabel && fieldLabel && rowLabel === fieldLabel)
+    );
+  });
+
+  const aiValue = normalizeLine(aiMatch?.value || "");
+  const fallbackValueForField = normalizeLine(fallbackMatch?.value || "");
+
+  const useAiValue =
+    aiValue &&
+    comparable(aiValue) !== comparable(fallbackValue);
+
+  const useFallbackValue =
+    fallbackValueForField &&
+    comparable(fallbackValueForField) !== comparable(fallbackValue);
+
   return {
     key: field.key,
     label: cleanHeading(field.label),
-    value: normalizeLine(match?.value || fallbackValue),
-    confidence: Number(match?.confidence || 0),
-    evidence: normalizeLine(match?.evidence || "")
+    value: useAiValue
+      ? aiValue
+      : useFallbackValue
+        ? fallbackValueForField
+        : fallbackValue,
+    confidence: useAiValue
+      ? Number(aiMatch?.confidence || 0)
+      : useFallbackValue
+        ? Number(fallbackMatch?.confidence || 0)
+        : 0,
+    evidence: useAiValue
+      ? normalizeLine(aiMatch?.evidence || "")
+      : useFallbackValue
+        ? normalizeLine(fallbackMatch?.evidence || "")
+        : ""
   };
 });
 
@@ -518,13 +553,16 @@ semanticModel = await callSemanticMapper({
 let documentModel = null;
 
 if (isUsableSemanticModel(semanticModel)) {
+  const sourceProfile = buildSourceProfile(sourcePdf);
+
   documentModel = buildDocumentModelFromSemanticModel({
     semanticModel,
     sourcePdf,
-    templateContract
+    templateContract,
+    sourceProfile
   });
 
-  console.log("Rendering from AI semantic model for", file.name, documentModel);
+  console.log("Rendering from AI semantic model with summary repair for", file.name, documentModel);
 } else {
   console.warn("AI semantic model was missing or too weak. Falling back to JavaScript formatter.", {
     fileName: file.name,
