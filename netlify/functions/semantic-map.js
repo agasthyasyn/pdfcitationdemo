@@ -1,3 +1,41 @@
+function extractOpenAIText(data) {
+  if (!data) return "";
+
+  if (typeof data.output_text === "string" && data.output_text.trim()) {
+    return data.output_text.trim();
+  }
+
+  if (Array.isArray(data.output)) {
+    const chunks = [];
+
+    for (const item of data.output) {
+      if (item?.type === "message" && Array.isArray(item.content)) {
+        for (const content of item.content) {
+          if (typeof content?.text === "string") {
+            chunks.push(content.text);
+          }
+
+          if (typeof content?.content === "string") {
+            chunks.push(content.content);
+          }
+
+          if (typeof content?.value === "string") {
+            chunks.push(content.value);
+          }
+        }
+      }
+
+      if (typeof item?.text === "string") {
+        chunks.push(item.text);
+      }
+    }
+
+    return chunks.join("\n").trim();
+  }
+
+  return "";
+}
+
 exports.handler = async function (event) {
   const headers = {
     "Access-Control-Allow-Origin": "*",
@@ -14,21 +52,21 @@ exports.handler = async function (event) {
     };
   }
 
-if (event.httpMethod === "GET") {
-  return {
-    statusCode: 200,
-    headers,
-    body: JSON.stringify({
-      ok: true,
-      message: "semantic-map function is live",
-      checkedAt: new Date().toISOString(),
-      hasOpenAIKey: Boolean(process.env.OPENAI_API_KEY),
-      visibleOpenAIKeyNames: Object.keys(process.env).filter((key) =>
-        key.toLowerCase().includes("openai")
-      )
-    })
-  };
-}
+  if (event.httpMethod === "GET") {
+    return {
+      statusCode: 200,
+      headers,
+      body: JSON.stringify({
+        ok: true,
+        message: "semantic-map function is live",
+        checkedAt: new Date().toISOString(),
+        hasOpenAIKey: Boolean(process.env.OPENAI_API_KEY),
+        visibleOpenAIKeyNames: Object.keys(process.env).filter((key) =>
+          key.toLowerCase().includes("openai")
+        )
+      })
+    };
+  }
 
   if (event.httpMethod !== "POST") {
     return {
@@ -72,11 +110,48 @@ if (event.httpMethod === "GET") {
           {
             role: "system",
             content:
-              "You are a controlled semantic mapper for a document formatting tool. Return JSON only."
+              "You are a controlled semantic mapper for a document formatting tool. Return valid JSON only. Do not return markdown. Do not wrap JSON in code fences."
           },
           {
             role: "user",
-            content: `Extract a simple document formatting JSON from this text:\n\n${testText}\n\nReturn only JSON with title, summaryRows, sections, and warnings.`
+            content: `
+Extract a simple document-formatting JSON from the text below.
+
+Required JSON shape:
+{
+  "title": "",
+  "summaryRows": [
+    {
+      "label": "",
+      "value": "",
+      "confidence": 0,
+      "evidence": ""
+    }
+  ],
+  "sections": [
+    {
+      "heading": "",
+      "blocks": [
+        {
+          "type": "text",
+          "content": ""
+        }
+      ]
+    }
+  ],
+  "warnings": []
+}
+
+Rules:
+- Use only the supplied text.
+- Do not invent missing values.
+- If a value is missing, use "Not Available".
+- Keep the output compact.
+- Return JSON only.
+
+Source text:
+${testText}
+`
           }
         ]
       })
@@ -95,13 +170,23 @@ if (event.httpMethod === "GET") {
       };
     }
 
+    const outputText = extractOpenAIText(data);
+
+    let parsedJson = null;
+    try {
+      parsedJson = JSON.parse(outputText);
+    } catch {
+      parsedJson = null;
+    }
+
     return {
       statusCode: 200,
       headers,
       body: JSON.stringify({
         ok: true,
-        raw: data,
-        outputText: data.output_text || ""
+        outputText,
+        parsedJson,
+        raw: data
       })
     };
   } catch (error) {
