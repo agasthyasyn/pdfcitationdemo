@@ -524,14 +524,21 @@ async function runSecondBrain({ fileName, sourcePdf, templateContract }) {
     coverageItems
   });
 
-  finalModel.coverageAudit = finalModel.coverageAudit || {};
-  finalModel.coverageAudit.extractedCoverageItemCount = coverageItems.length;
-  finalModel.coverageAudit.sourceCoverageMode = "second_brain_chunked";
+finalModel.sourceIdentity = sourceIdentity;
+finalModel.firstBrainTitle = identityModel.title || "";
+finalModel.firstBrainSummaryRows = Array.isArray(identityModel.summaryRows)
+  ? identityModel.summaryRows
+  : [];
+finalModel.extractedCoverageItems = coverageItems;
+finalModel.templateTitle = template.title || "";
 
-  console.log("Second brain: final formatting completed", finalModel);
+finalModel.coverageAudit = finalModel.coverageAudit || {};
+finalModel.coverageAudit.extractedCoverageItemCount = coverageItems.length;
+finalModel.coverageAudit.sourceCoverageMode = "second_brain_chunked";
 
-  return finalModel;
-}
+console.log("Second brain: final formatting completed", finalModel);
+
+return finalModel;
 
 function isUsableSemanticModel(semanticModel) {
   if (!semanticModel || typeof semanticModel !== "object") return false;
@@ -659,10 +666,90 @@ function buildCoverageAuditSection(semanticModel, nextOrder) {
   };
 }
 
+function isUsefulIdentityValue(value) {
+  const text = normalizeLine(value || "");
+  const clean = comparable(text);
+
+  if (!text || !clean) return false;
+  if (clean === comparable(getFallbackValue())) return false;
+  if (/^(n\/?a|nil|null|none|unknown|not available)$/i.test(text)) return false;
+
+  return true;
+}
+
+function shouldRejectSemanticTitle(title, semanticModel) {
+  const cleanTitle = comparable(title || "");
+  const templateTitle = comparable(semanticModel?.templateTitle || "");
+
+  if (!cleanTitle) return true;
+
+  // Reject exact sample/template title leakage.
+  if (templateTitle && cleanTitle === templateTitle) return true;
+
+  const identity = semanticModel?.sourceIdentity || {};
+  const identityTokens = [
+    identity.vesselName,
+    identity.portName,
+    identity.country,
+    identity.primarySubject
+  ]
+    .filter(isUsefulIdentityValue)
+    .map((item) => comparable(item));
+
+  // If we have identity, title must contain at least one strong identity token.
+  if (identityTokens.length) {
+    return !identityTokens.some((token) => token && cleanTitle.includes(token));
+  }
+
+  return false;
+}
+
+function buildSourceLockedTitle({ semanticModel, sourcePdf }) {
+  const identity = semanticModel?.sourceIdentity || {};
+
+  const vessel = isUsefulIdentityValue(identity.vesselName)
+    ? normalizeVesselName(identity.vesselName)
+    : "";
+
+  const port = isUsefulIdentityValue(identity.portName)
+    ? cleanHeading(identity.portName)
+    : "";
+
+  const country = isUsefulIdentityValue(identity.country)
+    ? cleanHeading(identity.country)
+    : "";
+
+  const subject = isUsefulIdentityValue(identity.primarySubject)
+    ? cleanHeading(identity.primarySubject)
+    : "";
+
+  const dateOrPeriod = isUsefulIdentityValue(identity.dateOrPeriod)
+    ? cleanHeading(identity.dateOrPeriod)
+    : "";
+
+  if (port && country && vessel) {
+    return cleanDocumentTitle(`${port}, ${country} - ${vessel}${dateOrPeriod ? ` - ${dateOrPeriod}` : ""}`);
+  }
+
+  if (subject && !shouldRejectSemanticTitle(subject, semanticModel)) {
+    return cleanDocumentTitle(subject);
+  }
+
+  if (semanticModel?.title && !shouldRejectSemanticTitle(semanticModel.title, semanticModel)) {
+    return cleanDocumentTitle(semanticModel.title);
+  }
+
+  return cleanDocumentTitle(removePdfExtension(sourcePdf?.fileName || "Document").replace(/[_-]+/g, " "));
+}
+
 function buildDocumentModelFromSemanticModel({ semanticModel, sourcePdf, templateContract, sourceProfile = null }) {  const fallbackValue = getFallbackValue();
-  const aiSummaryRows = Array.isArray(semanticModel?.summaryRows)
-    ? semanticModel.summaryRows
-    : [];
+const firstBrainSummaryRows = Array.isArray(semanticModel?.firstBrainSummaryRows)
+  ? semanticModel.firstBrainSummaryRows
+  : [];
+
+const finalBrainSummaryRows = Array.isArray(semanticModel?.summaryRows)
+  ? semanticModel.summaryRows
+  : [];
 
 const fallbackSummaryRows = sourceProfile
   ? buildSummaryRows(templateContract.headerFields || [], sourceProfile.keyValueFacts || [])
@@ -672,15 +759,25 @@ const summaryRows = (templateContract.headerFields || []).map((field) => {
   const fieldKey = comparable(field.key || "");
   const fieldLabel = comparable(field.label || "");
 
-  const aiMatch = aiSummaryRows.find((row) => {
-    const rowKey = comparable(row.key || "");
-    const rowLabel = comparable(row.label || "");
+const firstBrainMatch = firstBrainSummaryRows.find((row) => {
+  const rowKey = comparable(row.key || "");
+  const rowLabel = comparable(row.label || "");
 
-    return (
-      (rowKey && fieldKey && rowKey === fieldKey) ||
-      (rowLabel && fieldLabel && rowLabel === fieldLabel)
-    );
-  });
+  return (
+    (rowKey && fieldKey && rowKey === fieldKey) ||
+    (rowLabel && fieldLabel && rowLabel === fieldLabel)
+  );
+});
+
+const finalBrainMatch = finalBrainSummaryRows.find((row) => {
+  const rowKey = comparable(row.key || "");
+  const rowLabel = comparable(row.label || "");
+
+  return (
+    (rowKey && fieldKey && rowKey === fieldKey) ||
+    (rowLabel && fieldLabel && rowLabel === fieldLabel)
+  );
+});
 
   const fallbackMatch = fallbackSummaryRows.find((row) => {
     const rowKey = comparable(row.key || "");
@@ -692,32 +789,43 @@ const summaryRows = (templateContract.headerFields || []).map((field) => {
     );
   });
 
-  const aiValue = normalizeLine(aiMatch?.value || "");
-  const fallbackValueForField = normalizeLine(fallbackMatch?.value || "");
+const firstBrainValue = normalizeLine(firstBrainMatch?.value || "");
+const finalBrainValue = normalizeLine(finalBrainMatch?.value || "");
+const fallbackValueForField = normalizeLine(fallbackMatch?.value || "");
 
-  const useAiValue =
-    aiValue &&
-    comparable(aiValue) !== comparable(fallbackValue);
+const useFirstBrainValue =
+  firstBrainValue &&
+  comparable(firstBrainValue) !== comparable(fallbackValue);
 
-  const useFallbackValue =
-    fallbackValueForField &&
-    comparable(fallbackValueForField) !== comparable(fallbackValue);
+const useFinalBrainValue =
+  finalBrainValue &&
+  comparable(finalBrainValue) !== comparable(fallbackValue);
 
-  return {
-    key: field.key,
-    label: cleanHeading(field.label),
-    value: useAiValue
-      ? aiValue
+const useFallbackValue =
+  fallbackValueForField &&
+  comparable(fallbackValueForField) !== comparable(fallbackValue);
+
+return {
+  key: field.key,
+  label: cleanHeading(field.label),
+  value: useFirstBrainValue
+    ? firstBrainValue
+    : useFinalBrainValue
+      ? finalBrainValue
       : useFallbackValue
         ? fallbackValueForField
         : fallbackValue,
-    confidence: useAiValue
-      ? Number(aiMatch?.confidence || 0)
+  confidence: useFirstBrainValue
+    ? Number(firstBrainMatch?.confidence || 0)
+    : useFinalBrainValue
+      ? Number(finalBrainMatch?.confidence || 0)
       : useFallbackValue
         ? Number(fallbackMatch?.confidence || 0)
         : 0,
-    evidence: useAiValue
-      ? normalizeLine(aiMatch?.evidence || "")
+  evidence: useFirstBrainValue
+    ? normalizeLine(firstBrainMatch?.evidence || "")
+    : useFinalBrainValue
+      ? normalizeLine(finalBrainMatch?.evidence || "")
       : useFallbackValue
         ? normalizeLine(fallbackMatch?.evidence || "")
         : ""
@@ -769,7 +877,7 @@ if (coverageSection) {
                                                                                                                     
   return {
     sourceFileName: sourcePdf.fileName,
-    title: cleanDocumentTitle(semanticModel?.title || templateContract.title || sourcePdf.fileName),
+    title: buildSourceLockedTitle({ semanticModel, sourcePdf }),
     pageCount: sourcePdf.pageCount,
     summaryRows,
     sections,
