@@ -982,6 +982,259 @@ function buildSourceLockedTitle({ semanticModel, sourcePdf }) {
   return cleanDocumentTitle(removePdfExtension(sourcePdf?.fileName || "Document").replace(/[_-]+/g, " "));
 }
 
+function getSummaryFieldKind(field) {
+  const text = comparable(`${field?.label || ""} ${field?.key || ""}`);
+
+  if (/\bvessel\b|\bship\b|\bmv\b|\bm\/v\b/.test(text)) return "vessel";
+  if (/\bport name\b|\bport\b|\blocation\b/.test(text)) return "port";
+  if (/\bcountry\b/.test(text)) return "country";
+  if (/\bunlocode\b|\bunctad\b/.test(text)) return "code";
+  if (/\blatitude\b|\blongitude\b|\bposition\b|\blat\b|\blong\b/.test(text)) return "position";
+  if (/\btime zone\b|\btimezone\b|\bgmt\b|\butc\b/.test(text)) return "timeZone";
+  if (/\bstay\b|\bdate\b|\beta\b|\betb\b|\betd\b/.test(text)) return "date";
+  if (/\bberth\b|\bpier\b|\bterminal\b|\bjetty\b/.test(text)) return "berth";
+  if (/\bcargo operations\b|\brate\b|\bloading rate\b|\bdischarging rate\b/.test(text)) return "rate";
+  if (/\bcargo\b|\bcommodity\b/.test(text)) return "cargo";
+  if (/\bdepth\b|\bdraft\b|\bdraught\b|\bchannel\b/.test(text)) return "depth";
+  if (/\bdensity\b/.test(text)) return "density";
+  if (/\btidal\b|\btide\b/.test(text)) return "tide";
+  if (/\bsecurity\b|\bisps\b/.test(text)) return "security";
+  if (/\bvhf\b|\bcommunication\b|\bchannel\b|\bradio\b/.test(text)) return "vhf";
+  if (/\bagent\b|\bcontact\b|\bagency\b|\bcontacts\b/.test(text)) return "contact";
+  if (/\bpublication\b|\bchart\b|\benc\b|\benp\b/.test(text)) return "charts";
+
+  return "general";
+}
+
+function isMissingSummaryValue(value) {
+  const text = normalizeLine(value || "");
+  const clean = comparable(text);
+
+  return (
+    !text ||
+    !clean ||
+    clean === comparable(getFallbackValue()) ||
+    /^(n\/?a|nil|null|none|unknown|not available|unreadable)$/i.test(text)
+  );
+}
+
+function isSafeSummaryFieldValue(field, value, sourcePdf, evidence = "") {
+  const kind = getSummaryFieldKind(field);
+  const text = normalizeLine(value || "");
+  const clean = comparable(text);
+  const sourceFirstPages = comparable(
+    (sourcePdf?.pages || [])
+      .slice(0, 3)
+      .map((page) => page.text || "")
+      .join("\n")
+  );
+  const evidenceClean = comparable(evidence || "");
+
+  if (isMissingSummaryValue(text)) return false;
+  if (text.length > 180 && !["contact", "charts"].includes(kind)) return false;
+
+  if (/\b(keep the cabins|cargo manifest or b\/l|quantity in drums|money or cigarettes|porno videos|warning|please pay special attention)\b/i.test(text)) {
+    return false;
+  }
+
+  switch (kind) {
+    case "vessel":
+      return /^(CS|MV|M\/V)\s+[A-Z0-9][A-Z0-9 .'-]{1,45}$/i.test(text);
+
+    case "port":
+      return /[A-Za-z]/.test(text) &&
+        !/\d{2,}|@|berth|depth|channel|manifest|quantity|cabin|warning/i.test(text);
+
+    case "country":
+      return /[A-Za-z]/.test(text) &&
+        !/\d|@|berth|depth|channel|manifest|quantity/i.test(text) &&
+        text.length <= 60;
+
+    case "position":
+      if (/^\d{4,}/.test(text.replace(/\s+/g, ""))) return false;
+      if (/phone|tel|fax|mob|mobile|berth|depth|channel/i.test(text)) return false;
+
+      return (
+        /\b\d{1,2}[°\s]+\d{1,2}(?:\.\d+)?['’]?\s*[NS]\b.*\b\d{1,3}[°\s]+\d{1,2}(?:\.\d+)?['’]?\s*[EW]\b/i.test(text) &&
+        (
+          sourceFirstPages.includes(clean) ||
+          /\blat|long|position\b/i.test(evidence || "") ||
+          /\blat|long|position\b/.test(evidenceClean)
+        )
+      );
+
+    case "timeZone":
+      return /\b(GMT|UTC|SMT)\b/i.test(text) && !/berth|depth|agent|phone|fax|mail/i.test(text);
+
+    case "date":
+      return /\b\d{1,2}\s*\/?\s*(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\s*\/?\s*\d{2,4}\b/i.test(text) ||
+        /\b\d{1,2}\s*(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\s*\d{2,4}\b/i.test(text);
+
+    case "berth":
+      return /\bberth\b|\bterminal\b|\bpier\b|\bjetty\b|\b\d+\s*\/\s*\d+\b/i.test(text) &&
+        !/depth|channel|agent|phone|mail|fax/i.test(text);
+
+    case "cargo":
+      return /[A-Za-z]/.test(text) &&
+        !/manifest|b\/l|document|phone|email|berth|depth/i.test(text) &&
+        text.length <= 100;
+
+    case "rate":
+      return /\b\d/.test(text) &&
+        /\b(mt|mmt|ton|tons|day|agw|wp|rate|gang)\b/i.test(text);
+
+    case "depth":
+      return /\b(berth|channel|depth|draft|draught)\b/i.test(text) &&
+        /\d+(?:\.\d+)?\s*m\b/i.test(text);
+
+    case "density":
+      return /^\s*\d+(?:\.\d+)?(?:\s*[-–—]\s*\d+(?:\.\d+)?)?\s*$/.test(text);
+
+    case "tide":
+      return /\d/.test(text) && /\b(m|mtr|meter|metre|tidal|tide)\b/i.test(text);
+
+    case "security":
+      return /\b(isps|security|level\s*\d)\b/i.test(text) &&
+        !/^e-?mail|@/i.test(text);
+
+    case "vhf":
+      return /\b(vhf|ch|channel)\b/i.test(text) &&
+        !/\bberth\s*:?\s*\d|depth|channel\s*:?\s*13\.?5|agent|phone|tel|fax|email\b/i.test(text);
+
+    case "contact":
+      return /\b(agent|logistics|shipping|phone|tel|fax|mail|email|mobile|mob|manager|director)\b/i.test(text) ||
+        /@/.test(text);
+
+    case "charts":
+      return /\b(chart|charts|enc|publication|pilot|reference|nautical)\b/i.test(text);
+
+    default:
+      return true;
+  }
+}
+
+function pickSafeSummaryValue({ field, sourcePdf, fallbackValue, candidates }) {
+  for (const candidate of candidates) {
+    const value = normalizeLine(candidate?.value || "");
+    const evidence = normalizeLine(candidate?.evidence || "");
+
+    if (
+      value &&
+      comparable(value) !== comparable(fallbackValue) &&
+      isSafeSummaryFieldValue(field, value, sourcePdf, evidence)
+    ) {
+      return {
+        value,
+        confidence: Number(candidate?.confidence || 0),
+        evidence
+      };
+    }
+  }
+
+  return {
+    value: fallbackValue,
+    confidence: 0,
+    evidence: ""
+  };
+}
+
+function getSourcePageImage(sourcePdf, pageNumber) {
+  const page = (sourcePdf?.pages || []).find((item) => Number(item.pageNumber) === Number(pageNumber));
+  return page?.pageImage || null;
+}
+
+function materializeImageBlocksFromSourcePages({ semanticModel, sourcePdf, sections }) {
+  const visionPages = Array.isArray(semanticModel?.visionPages)
+    ? semanticModel.visionPages
+    : [];
+
+  for (const section of sections) {
+    for (const block of section.blocks || []) {
+      if (block.type !== "image") continue;
+
+      const pageNumber =
+        Number(block.sourcePage || block.pageNumber || block.pageNumbers?.[0] || 0) ||
+        null;
+
+      if (!pageNumber || block.imageDataUrl) continue;
+
+      const pageImage = getSourcePageImage(sourcePdf, pageNumber);
+
+      if (pageImage?.imageDataUrl) {
+        block.imageDataUrl = pageImage.imageDataUrl;
+        block.imageWidth = pageImage.width;
+        block.imageHeight = pageImage.height;
+        block.pageNumber = pageNumber;
+        block.caption = normalizeLine(block.caption || block.text || `Source visual from page ${pageNumber}`);
+        block.text = block.caption;
+      }
+    }
+  }
+
+  const existingImageKeys = new Set(
+    sections.flatMap((section) =>
+      (section.blocks || [])
+        .filter((block) => block.type === "image")
+        .map((block) => `${block.pageNumber || block.sourcePage || block.pageNumbers?.[0] || ""}|${comparable(block.caption || block.text || "")}`)
+    )
+  );
+
+  const visualBlocks = visionPages.flatMap((page) =>
+    (page.visualBlocks || []).map((visual) => ({
+      pageNumber: page.pageNumber,
+      caption: normalizeLine(visual.caption || visual.description || `Visual reference from page ${page.pageNumber}`),
+      description: normalizeLine(visual.description || ""),
+      kind: normalizeLine(visual.kind || "visual")
+    }))
+  );
+
+  if (!visualBlocks.length) return sections;
+
+  let visualSection = sections.find((section) =>
+    /visual|image|photo|screenshot|chart|reference/i.test(section.heading || "")
+  );
+
+  if (!visualSection) {
+    visualSection = {
+      id: `ai-visual-section-${sections.length + 1}`,
+      order: sections.length + 1,
+      heading: "Visual References",
+      blocks: [],
+      matchedSourceIds: [],
+      score: 1,
+      pageNumbers: []
+    };
+    sections.push(visualSection);
+  }
+
+  for (const visual of visualBlocks) {
+    const key = `${visual.pageNumber}|${comparable(visual.caption)}`;
+    if (existingImageKeys.has(key)) continue;
+
+    const pageImage = getSourcePageImage(sourcePdf, visual.pageNumber);
+    if (!pageImage?.imageDataUrl) continue;
+
+    visualSection.blocks.push({
+      type: "image",
+      imageDataUrl: pageImage.imageDataUrl,
+      imageWidth: pageImage.width,
+      imageHeight: pageImage.height,
+      pageNumber: visual.pageNumber,
+      sourcePage: visual.pageNumber,
+      pageNumbers: [visual.pageNumber],
+      caption: visual.caption,
+      text: visual.caption
+    });
+
+    visualSection.pageNumbers = uniqueNumbers([
+      ...(visualSection.pageNumbers || []),
+      visual.pageNumber
+    ]);
+  }
+
+  return sections;
+}
+
 function buildDocumentModelFromSemanticModel({ semanticModel, sourcePdf, templateContract, sourceProfile = null }) {  const fallbackValue = getFallbackValue();
 const firstBrainSummaryRows = Array.isArray(semanticModel?.firstBrainSummaryRows)
   ? semanticModel.firstBrainSummaryRows
@@ -1045,31 +1298,24 @@ const useFallbackValue =
   fallbackValueForField &&
   comparable(fallbackValueForField) !== comparable(fallbackValue);
 
+const picked = pickSafeSummaryValue({
+  field,
+  sourcePdf,
+  fallbackValue,
+  candidates: [
+    firstBrainMatch,
+    finalBrainMatch,
+    fallbackMatch
+  ]
+});
+
 return {
   key: field.key,
   label: cleanHeading(field.label),
-  value: useFirstBrainValue
-    ? firstBrainValue
-    : useFinalBrainValue
-      ? finalBrainValue
-      : useFallbackValue
-        ? fallbackValueForField
-        : fallbackValue,
-  confidence: useFirstBrainValue
-    ? Number(firstBrainMatch?.confidence || 0)
-    : useFinalBrainValue
-      ? Number(finalBrainMatch?.confidence || 0)
-      : useFallbackValue
-        ? Number(fallbackMatch?.confidence || 0)
-        : 0,
-  evidence: useFirstBrainValue
-    ? normalizeLine(firstBrainMatch?.evidence || "")
-    : useFinalBrainValue
-      ? normalizeLine(finalBrainMatch?.evidence || "")
-      : useFallbackValue
-        ? normalizeLine(fallbackMatch?.evidence || "")
-        : ""
-  };
+  value: picked.value,
+  confidence: picked.confidence,
+  evidence: picked.evidence
+};
 });
 
   const aiSections = Array.isArray(semanticModel?.sections)
@@ -1108,8 +1354,14 @@ const coverageSection = buildCoverageAuditSection(semanticModel, sections.length
 if (coverageSection) {
   sections.push(coverageSection);
 }
+
+sections = materializeImageBlocksFromSourcePages({
+  semanticModel,
+  sourcePdf,
+  sections
+});
                                                                                                                     
-  return {
+return {
     sourceFileName: sourcePdf.fileName,
     title: buildSourceLockedTitle({ semanticModel, sourcePdf }),
     pageCount: sourcePdf.pageCount,
@@ -3413,21 +3665,49 @@ function documentToPlainText(doc) {
     lines.push(`${index + offset}. ${heading}`);
     lines.push("");
 
-    for (const block of section.blocks) {
-      if (block.type === "text") {
-        const text = cleanBusinessContent(block.text);
-        if (text) {
-          lines.push(text);
-          lines.push("");
-        }
-      }
-
-      if (block.type === "image") {
-        lines.push("[Image/visual content retained in PDF export]");
-        lines.push("");
-      }
+for (const block of section.blocks) {
+  if (block.type === "text") {
+    const text = cleanBusinessContent(block.text);
+    if (text) {
+      lines.push(text);
+      lines.push("");
     }
-  });
+  }
+
+  if (block.type === "list") {
+    const items = Array.isArray(block.items) ? block.items : [];
+    for (const item of items) {
+      const cleanItem = normalizeLine(item || "");
+      if (cleanItem) lines.push(`• ${cleanItem}`);
+    }
+    if (items.length) lines.push("");
+  }
+
+  if (block.type === "table") {
+    const headers = Array.isArray(block.headers) ? block.headers : [];
+    const rows = Array.isArray(block.rows) ? block.rows : [];
+
+    if (headers.length) {
+      lines.push(headers.map((item) => normalizeLine(item || "")).join(" | "));
+      lines.push(headers.map(() => "---").join(" | "));
+    }
+
+    for (const row of rows) {
+      const cells = Array.isArray(row) ? row : [row];
+      lines.push(cells.map((cell) => normalizeLine(cell || "")).join(" | "));
+    }
+
+    if (headers.length || rows.length) lines.push("");
+  }
+
+  if (block.type === "image") {
+    const pageNumber = block.pageNumber || block.sourcePage || block.pageNumbers?.[0] || "";
+    const caption = normalizeLine(block.caption || block.text || "Visual content retained");
+    lines.push(`[Image${pageNumber ? ` - Page ${pageNumber}` : ""}: ${caption}]`);
+    lines.push("");
+    }
+  }
+});
 
   return cleanBusinessContent(lines.join("\n"));
 }
