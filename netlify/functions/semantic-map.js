@@ -358,7 +358,7 @@ Required JSON:
       "sourcePage": null
     }
   ],
-  "sections": [
+    "sections": [
     {
       "heading": "",
       "blocks": [
@@ -366,6 +366,23 @@ Required JSON:
           "type": "text",
           "paragraphs": [],
           "content": "",
+          "sourcePage": null
+        },
+        {
+          "type": "list",
+          "items": [],
+          "sourcePage": null
+        },
+        {
+          "type": "table",
+          "headers": [],
+          "rows": [],
+          "sourcePage": null
+        },
+        {
+          "type": "image",
+          "caption": "",
+          "description": "",
           "sourcePage": null
         }
       ]
@@ -420,6 +437,34 @@ Rules:
 - Maximum 10 sections.
 - Maximum 5 paragraphs per section.
 - Keep the final model useful, not bloated.
+
+Rules:
+- The template is only a reference for structure and readability.
+- The source identity, summary rows, and coverage items are the factual authority.
+- Do not copy sample/template-specific facts unless they are present in the source identity or coverage items.
+- Return exactly one summaryRows item for every template header field.
+- Prefer the pre-extracted summaryRows when they are valid.
+- Build clean body sections from the mandatory coverage items.
+- Do not drop high-importance coverage items.
+- If a coverage item does not fit neatly into the main sections, preserve it under coverageAudit.additionalOperationalNotes.
+- Use paragraph arrays for every text block.
+- Each paragraph must be readable, complete, and focused.
+- Do not create one long wall of text.
+- Do not over-compress operational restrictions or instructions.
+- Avoid exact duplication.
+- Create required number of sections to retrieve and format every information from the source.
+- Create requried number of paragraphs that is useful for the documentation formatting process.
+- Keep the final model useful, not bloated.
+
+HTML/document structure rules:
+- Treat every section as a future <section> block.
+- Text body content must use text blocks with paragraphs, equivalent to future <p>...</p>.
+- Step-by-step instructions, warnings, requirements, document lists, and grouped points should use list blocks, equivalent to future <li>...</li>.
+- Visible tables from the source or vision extraction should use table blocks with headers and rows.
+- Meaningful photos, screenshots, berth visuals, cargo photos, maps, and charts should use image blocks with captions and sourcePage.
+- Do not flatten lists and tables into long paragraphs when structure is visible.
+- Do not create literal HTML tags in the JSON values.
+- Use JSON block types only: text, list, table, image.
 
 File name:
 ${fileName}
