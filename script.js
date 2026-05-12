@@ -339,7 +339,23 @@ async function callSemanticMapper(payload) {
     body: JSON.stringify(payload)
   });
 
-  const data = await response.json();
+  const rawText = await response.text();
+
+  let data = null;
+
+  try {
+    data = rawText ? JSON.parse(rawText) : {};
+  } catch {
+    console.error("Semantic mapper returned non-JSON response:", {
+      status: response.status,
+      statusText: response.statusText,
+      preview: rawText.slice(0, 800)
+    });
+
+    throw new Error(
+      `Semantic mapper returned non-JSON response. HTTP ${response.status}.`
+    );
+  }
 
   if (!response.ok || !data.ok) {
     console.error("Semantic mapper failed:", data);
@@ -347,11 +363,174 @@ async function callSemanticMapper(payload) {
   }
 
   if (!data.parsedJson || typeof data.parsedJson !== "object") {
-    console.error("Semantic mapper returned non-JSON output:", data);
-    throw new Error("Semantic mapper returned invalid JSON. Processing stopped for this AI model.");
+    console.error("Semantic mapper returned invalid JSON output:", data);
+    throw new Error("Semantic mapper returned invalid JSON.");
   }
 
   return data.parsedJson;
+}
+
+function buildTemplatePayload(templateContract) {
+  return {
+    title: templateContract.title,
+    headerFields: templateContract.headerFields.map((field) => ({
+      key: field.key,
+      label: field.label
+    })),
+    sections: templateContract.sections.map((section) => ({
+      id: section.id,
+      heading: section.heading,
+      order: section.order
+    }))
+  };
+}
+
+function buildFirstPagesText(sourcePdf, pageLimit = 3) {
+  return (sourcePdf.pages || [])
+    .slice(0, pageLimit)
+    .map((page) => `PAGE ${page.pageNumber}\n${page.text || ""}`)
+    .join("\n\n")
+    .trim();
+}
+
+function buildBrainPageChunks(sourcePdf, pagesPerChunk = 4, maxCharsPerChunk = 18000) {
+  const pages = Array.isArray(sourcePdf.pages) ? sourcePdf.pages : [];
+  const chunks = [];
+
+  for (let i = 0; i < pages.length; i += pagesPerChunk) {
+    const group = pages.slice(i, i + pagesPerChunk);
+    const chunkPages = [];
+    let usedChars = 0;
+
+    for (const page of group) {
+      const rawText = normalizeLine(page.text || "");
+      const remaining = maxCharsPerChunk - usedChars;
+      if (remaining <= 0) break;
+
+      const clippedText = rawText.length > remaining
+        ? rawText.slice(0, remaining)
+        : rawText;
+
+      usedChars += clippedText.length;
+
+      chunkPages.push({
+        pageNumber: page.pageNumber,
+        text: clippedText
+      });
+    }
+
+    if (chunkPages.length) {
+      chunks.push({
+        chunkId: `chunk-${chunks.length + 1}`,
+        pageNumbers: chunkPages.map((page) => page.pageNumber),
+        pages: chunkPages
+      });
+    }
+  }
+
+  return chunks;
+}
+
+function dedupeCoverageItems(items) {
+  const seen = new Set();
+  const result = [];
+
+  for (const item of items || []) {
+    const detail = normalizeLine(item?.detail || "");
+    if (!detail) continue;
+
+    const key = comparable(`${item?.theme || ""} ${detail}`);
+    if (!key || seen.has(key)) continue;
+
+    seen.add(key);
+    result.push({
+      theme: normalizeLine(item?.theme || "General"),
+      detail,
+      importance: /high|medium|low/i.test(item?.importance || "")
+        ? String(item.importance).toLowerCase()
+        : "medium",
+      sourcePage: Number(item?.sourcePage || 0) || null,
+      evidence: normalizeLine(item?.evidence || "")
+    });
+  }
+
+  return result
+    .sort((a, b) => {
+      const rank = { high: 3, medium: 2, low: 1 };
+      return (rank[b.importance] || 0) - (rank[a.importance] || 0);
+    })
+    .slice(0, 120);
+}
+
+async function runSecondBrain({ fileName, sourcePdf, templateContract }) {
+  const template = buildTemplatePayload(templateContract);
+
+  console.log("Second brain: identity + summary started", fileName);
+
+  const identityModel = await callSemanticMapper({
+    mode: "identity_summary",
+    fileName,
+    template,
+    firstPagesText: buildFirstPagesText(sourcePdf, 3)
+  });
+
+  console.log("Second brain: identity + summary completed", identityModel);
+
+  const sourceIdentity = identityModel.sourceIdentity || {};
+  const chunks = buildBrainPageChunks(sourcePdf, 4, 18000);
+  const coverageModels = [];
+
+  for (const chunk of chunks) {
+    console.log("Second brain: coverage chunk started", {
+      fileName,
+      chunkId: chunk.chunkId,
+      pageNumbers: chunk.pageNumbers
+    });
+
+    const chunkModel = await callSemanticMapper({
+      mode: "coverage_chunk",
+      fileName,
+      sourceIdentity,
+      chunkId: chunk.chunkId,
+      pages: chunk.pages
+    });
+
+    coverageModels.push(chunkModel);
+
+    console.log("Second brain: coverage chunk completed", {
+      fileName,
+      chunkId: chunk.chunkId,
+      items: Array.isArray(chunkModel.coverageItems) ? chunkModel.coverageItems.length : 0
+    });
+  }
+
+  const coverageItems = dedupeCoverageItems(
+    coverageModels.flatMap((model) =>
+      Array.isArray(model.coverageItems) ? model.coverageItems : []
+    )
+  );
+
+  console.log("Second brain: final formatting started", {
+    fileName,
+    coverageItemCount: coverageItems.length
+  });
+
+  const finalModel = await callSemanticMapper({
+    mode: "final_format",
+    fileName,
+    template,
+    sourceIdentity,
+    summaryRows: Array.isArray(identityModel.summaryRows) ? identityModel.summaryRows : [],
+    coverageItems
+  });
+
+  finalModel.coverageAudit = finalModel.coverageAudit || {};
+  finalModel.coverageAudit.extractedCoverageItemCount = coverageItems.length;
+  finalModel.coverageAudit.sourceCoverageMode = "second_brain_chunked";
+
+  console.log("Second brain: final formatting completed", finalModel);
+
+  return finalModel;
 }
 
 function isUsableSemanticModel(semanticModel) {
@@ -640,21 +819,10 @@ for (let i = 0; i < state.sourceFiles.length; i++) {
   let semanticModel = null;
 
   try {
-semanticModel = await callSemanticMapper({
+semanticModel = await runSecondBrain({
   fileName: file.name,
-  sourceText: sourcePdf.fullText,
-  template: {
-    title: templateContract.title,
-    headerFields: templateContract.headerFields.map((field) => ({
-      key: field.key,
-      label: field.label
-    })),
-    sections: templateContract.sections.map((section) => ({
-      id: section.id,
-      heading: section.heading,
-      order: section.order
-    }))
-  }
+  sourcePdf,
+  templateContract
 });
 
     console.log("AI Semantic Model for", file.name, semanticModel);
