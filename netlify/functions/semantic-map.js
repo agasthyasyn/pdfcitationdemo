@@ -155,9 +155,11 @@ const response = await fetch("https://api.openai.com/v1/responses", {
           {
             role: "user",
             content: `
-You are the document brain for a PDF formatting tool.
+You are a smart document analyst and formatter for a PDF formatting tool.
 
-Your job is to create a clean, robust, professional document model by adapting the messy source document into the detected sample/template structure.
+Your job is to understand the sample/template as a reference for reader-friendly structure, not as a source of facts.
+
+Create a clean, clear, robust, professional document model by understanding the source document and arranging its content into the most suitable summary fields and body sections.
 
 Return valid JSON only. Do not return markdown. Do not wrap JSON in code fences.
 
@@ -180,6 +182,7 @@ Required JSON shape:
       "blocks": [
         {
           "type": "text",
+          "paragraphs": [],
           "content": "",
           "sourcePage": null
         }
@@ -195,59 +198,71 @@ ${JSON.stringify(headerFields, null, 2)}
 Template sections:
 ${JSON.stringify(templateSections, null, 2)}
 
-Core authority rule:
-- The sample/template structure is the formatting authority.
-- The source document is the factual authority.
-- Never invent facts outside the supplied source text.
-- Never ignore the template structure when template fields are provided.
+Core interpretation rules:
+- The sample/template is a reference for structure, layout logic, and reader experience.
+- The sample/template is not the factual source.
+- The source document is the only factual authority.
+- Do not copy sample-specific names, ports, countries, companies, vessels, locations, or headings unless they are also present in the source document.
+- Do not strictly mimic the sample wording.
+- Use the sample to understand what kind of information belongs where.
+- Use the source to decide what the actual values and body content should be.
 
-Template adaptation rule:
-- If the sample/template contains summary rows, the source document must adapt into those summary rows.
-- Return exactly one summaryRows item for every Template header field.
+Smart field allocation rules:
+- Read each template header field as a meaning-based target, not just a keyword.
+- Use your understanding to decide what value belongs in each field.
+- A country field should contain a country-like value.
+- A port, city, or location field should contain a place/location-like value.
+- A vessel, customer, vendor, project, or event name field should contain the appropriate name-like value.
+- A date or stay field should contain a date or date range.
+- A contact field should contain a person, company, phone, email, or contact details.
+- A communication field should contain communication details such as channels, radio, phone, email, or equivalent source context.
+- A depth, draft, quantity, rate, estimate, amount, or measurement field should preserve numbers and units accurately.
+- If the source wording differs from the template label, map by meaning.
+- If a value is genuinely missing, use "Not Available".
+
+Summary table rules:
+- If the template contains summary/header rows, return exactly one summaryRows item for every Template header field.
 - Use the exact key from the Template header field.
 - Use the exact label from the Template header field.
 - Do not rename labels.
 - Do not create extra summary labels.
-- Do not replace the template summary structure with your own summary structure.
-- Do not skip a template summary row just because the source wording is different.
-- Search flexibly across the source text for equivalent meanings.
-- If a value is genuinely missing after checking the source text, use "Not Available".
+- Do not leave a field as Not Available if a clear equivalent exists in the source.
+- Do not place body sentences, warnings, phone fragments, unrelated numbers, or operational remarks into summary fields.
+- Evidence must support the extracted value and must come from the supplied source text.
 
-Flexible extraction guidance:
-- Vessel Name may appear near "CS", "MV", "M/V", "Vessel", or in a line like "CS Jenna : Dated ...".
-- Port Name and Country may appear in a title like "PORT INFORMATION : ABIDJAN/IVORY COAST".
-- Cargo may appear in brackets such as "[DISCHARGING SUGAR IN BAGS]" or inside cargo operation notes.
-- Latitude / Longitude / Position may appear under "PORT POSITION".
-- Time Zone may appear as "Time Zone", "GMT", "UTC", or local time.
-- VHF / Communication may appear under "Radio communications", "Channel", or "VHF".
-- Berth / Pier / Terminal may appear under "Berths and cargo", "BERTH No.", "Terminal", "Pier", or "Jetty".
-- Density may appear as "Water density", "Dock density", or "Density".
-- Cargo Operations / Rate should include method and rate when available, not just cargo type.
+Body section rules:
+- Use the template sections as a reference for how a reader expects the document to be organized.
+- Do not blindly reproduce template section names if they do not fit the source.
+- Create clean section headings that are appropriate for the source document.
+- Place each source detail under the most suitable section.
+- Remove duplication across sections.
+- Avoid creating too many tiny sections.
+- Do not include system notes, template references, original source notes, generated output notes, or audit notes.
 
-Robust formatting and readability rules:
-- Create a clean, robust, professional formatted document model.
-- Correct broken line breaks from PDF extraction.
-- Restore basic punctuation where the source text is clearly broken.
-- Group related facts into clear paragraphs.
-- Avoid one long paragraph when the content contains multiple topics.
-- Keep each paragraph focused on one operational idea.
-- Use concise maritime/business wording.
-- Preserve numbers, dates, coordinates, VHF channels, drafts, rates, cargo quantities, and units accurately.
-- Do not over-polish warnings or operational restrictions in a way that changes their meaning.
+Paragraph formatting rules:
+- Every body block must be cleanly paragraph-based.
+- Use the "paragraphs" array for paragraph-level content.
+- Each paragraph must be a complete, readable paragraph.
+- Do not create one long wall of text.
+- Do not put unrelated topics into the same paragraph.
+- Fix broken PDF line breaks.
+- Restore basic punctuation where the extracted text is clearly broken.
+- Keep operational meaning unchanged.
+- Preserve names, dates, coordinates, quantities, contact details, rates, measurements, and units accurately.
+- Prefer clear reader-friendly paragraphs over raw extracted lines.
+- The "content" field may contain the same paragraphs joined with double line breaks.
 
-Section rules:
-- Use the Template sections as guidance.
-- Include only sections that have meaningful source content.
-- Put content into the most suitable section based on meaning, not only exact keyword matching.
-- Do not include system notes.
-- Do not mention original source, template used, formatted document, or generated output.
-- Do not omit useful source information just to keep the output short.
+Table and visual awareness rules:
+- If the source appears to contain a table but the text extraction is too broken, summarize the table carefully without inventing missing cells.
+- If the content is clearly a visual/chart/photo reference, do not force it into random body text.
+- Mention useful visual context only when it helps the reader understand the document.
 
-Evidence rules:
-- Evidence must be copied from the supplied source text.
-- Evidence should support the extracted value.
-- If page number is unknown, use null.
-- Confidence must be between 0 and 1.
+Quality rules:
+- Be accurate before being polished.
+- Be clear before being short.
+- Do not hallucinate.
+- Do not over-polish warnings or restrictions in a way that changes meaning.
+- If unsure, use "Not Available" or add a warning.
 
 Source text:
 ${sourceText}
