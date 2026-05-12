@@ -524,6 +524,95 @@ function visionItemsForChunk(visionPages, pageNumbers) {
     }));
 }
 
+function compactVisionPagesForFinal(visionPages) {
+  return (visionPages || []).map((page) => ({
+    pageNumber: page.pageNumber,
+    pageRole: normalizeLine(page.pageRole || ""),
+
+    textBlocks: (page.textBlocks || [])
+      .slice(0, 8)
+      .map((block) => ({
+        type: normalizeLine(block.type || ""),
+        text: normalizeLine(block.text || ""),
+        position: normalizeLine(block.position || ""),
+        importance: normalizeLine(block.importance || "")
+      }))
+      .filter((block) => block.text),
+
+    lists: (page.lists || [])
+      .slice(0, 6)
+      .map((list) => ({
+        heading: normalizeLine(list.heading || ""),
+        items: (list.items || [])
+          .map((item) => normalizeLine(item || ""))
+          .filter(Boolean)
+          .slice(0, 14),
+        position: normalizeLine(list.position || ""),
+        importance: normalizeLine(list.importance || "")
+      }))
+      .filter((list) => list.heading || list.items.length),
+
+    tables: (page.tables || [])
+      .slice(0, 5)
+      .map((table) => ({
+        heading: normalizeLine(table.heading || ""),
+        headers: (table.headers || [])
+          .map((item) => normalizeLine(item || ""))
+          .filter(Boolean)
+          .slice(0, 8),
+        rows: (table.rows || [])
+          .slice(0, 16)
+          .map((row) =>
+            Array.isArray(row)
+              ? row.map((cell) => normalizeLine(cell || "")).slice(0, 8)
+              : [normalizeLine(row || "")]
+          )
+          .filter((row) => row.some(Boolean)),
+        position: normalizeLine(table.position || ""),
+        importance: normalizeLine(table.importance || "")
+      }))
+      .filter((table) => table.heading || table.headers.length || table.rows.length),
+
+    visualBlocks: (page.visualBlocks || [])
+      .slice(0, 5)
+      .map((visual) => ({
+        kind: normalizeLine(visual.kind || ""),
+        caption: normalizeLine(visual.caption || ""),
+        description: normalizeLine(visual.description || ""),
+        position: normalizeLine(visual.position || ""),
+        importance: normalizeLine(visual.importance || "")
+      }))
+      .filter((visual) => visual.caption || visual.description),
+
+    coverageItems: (page.coverageItems || [])
+      .slice(0, 16)
+      .map((item) => ({
+        theme: normalizeLine(item.theme || "General"),
+        detail: normalizeLine(item.detail || ""),
+        importance: /high|medium|low/i.test(item.importance || "")
+          ? String(item.importance).toLowerCase()
+          : "medium",
+        sourcePage: Number(item.sourcePage || page.pageNumber || 0) || null,
+        evidence: normalizeLine(item.evidence || "")
+      }))
+      .filter((item) => item.detail)
+  }));
+}
+
+function coverageItemsFromVisionPages(visionPages) {
+  return (visionPages || []).flatMap((page) =>
+    (page.coverageItems || []).map((item) => ({
+      theme: normalizeLine(item.theme || page.pageRole || "Visual / Page Intelligence"),
+      detail: normalizeLine(item.detail || ""),
+      importance: /high|medium|low/i.test(item.importance || "")
+        ? String(item.importance).toLowerCase()
+        : "medium",
+      sourcePage: Number(item.sourcePage || page.pageNumber || 0) || null,
+      evidence: normalizeLine(item.evidence || "")
+    }))
+  ).filter((item) => item.detail);
+}
+
 async function runSecondBrain({ fileName, sourcePdf, templateContract }) {
   const template = buildTemplatePayload(templateContract);
 
@@ -574,11 +663,12 @@ const chunkModel = await callSemanticMapper({
     });
   }
 
-  const coverageItems = dedupeCoverageItems(
-    coverageModels.flatMap((model) =>
-      Array.isArray(model.coverageItems) ? model.coverageItems : []
-    )
-  );
+const coverageItems = dedupeCoverageItems([
+  ...coverageModels.flatMap((model) =>
+    Array.isArray(model.coverageItems) ? model.coverageItems : []
+  ),
+  ...coverageItemsFromVisionPages(visionPages)
+]);
 
   console.log("Second brain: final formatting started", {
     fileName,
@@ -592,7 +682,7 @@ const finalModel = await callSemanticMapper({
   sourceIdentity,
   summaryRows: Array.isArray(identityModel.summaryRows) ? identityModel.summaryRows : [],
   coverageItems,
-  visionPages
+  visionPages: compactVisionPagesForFinal(visionPages)
 });
 
 finalModel.sourceIdentity = sourceIdentity;
