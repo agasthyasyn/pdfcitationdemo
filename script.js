@@ -3974,36 +3974,53 @@ async function generatePdf(documents) {
 }
 
 async function exportPdf() {
-  if (!state.documents.length) {
-    setStatus("No processed document available to export.", "error");
-    return;
-  }
-
   try {
-    setStatus("Generating PDF...");
-
-    const pdfDoc = await PDFDocument.create();
-    const fonts = {
-      regular: await pdfDoc.embedFont(StandardFonts.Helvetica),
-      bold: await pdfDoc.embedFont(StandardFonts.HelveticaBold)
-    };
-
-    for (let i = 0; i < state.documents.length; i++) {
-      if (i > 0) addBlankPageBreak(pdfDoc);
-      await addDocumentToPdf(pdfDoc, state.documents[i], fonts);
+    if (!Array.isArray(state.documents) || !state.documents.length) {
+      setStatus("No formatted document available to export.", "error");
+      return;
     }
 
-    const bytes = await pdfDoc.save();
-    const fileName =
-      state.documents.length === 1
-        ? buildOutputFileName(state.documents[0].sourceFileName)
-        : "Updated_Documents.pdf";
+    setStatus("Generating PDF export...");
 
-    downloadBlob(bytes, fileName, "application/pdf");
-    setStatus("PDF exported successfully.", "success");
+    const imageBlocks = state.documents.flatMap((doc) =>
+  (doc.sections || []).flatMap((section) =>
+    (section.blocks || []).filter((block) => block.type === "image")
+  )
+);
+
+console.log("PDF export image blocks", imageBlocks.map((block) => ({
+  caption: block.caption,
+  sourcePage: block.sourcePage || block.pageNumber,
+  hasImageDataUrl: Boolean(block.imageDataUrl),
+  imageMimeType: block.imageMimeType,
+  width: block.imageWidth,
+  height: block.imageHeight
+})));
+    
+    const pdfBytes = await generatePdf(state.documents);
+
+    const blob = new Blob([pdfBytes], { type: "application/pdf" });
+    const url = URL.createObjectURL(blob);
+
+    const firstName = state.documents[0]?.sourceFileName || "formatted-document.pdf";
+    const safeName = removePdfExtension(firstName)
+      .replace(/[^a-z0-9]+/gi, "_")
+      .replace(/^_+|_+$/g, "")
+      .toLowerCase();
+
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${safeName || "formatted_document"}_formatted.pdf`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+
+    URL.revokeObjectURL(url);
+
+    setStatus("PDF export completed.", "success");
   } catch (error) {
-    console.error(error);
-    setStatus(`Export failed: ${error.message}`, "error");
+    console.error("PDF export failed:", error);
+    setStatus(`PDF export failed: ${error.message}`, "error");
   }
 }
 
@@ -4075,7 +4092,7 @@ async function addDocumentToPdf(pdfDoc, doc, fonts) {
       }
 
       if (block.type === "image" && block.imageDataUrl) {
-        const imageResult = await embedPngFromDataUrl(pdfDoc, block.imageDataUrl);
+        const imageResult = await embedImageFromDataUrl(pdfDoc, block.imageDataUrl, block.imageMimeType)
         if (!imageResult) continue;
 
         const { image, width, height } = imageResult;
@@ -4230,14 +4247,36 @@ function drawPageFooter(page, title, fonts, pageSize, margin) {
   });
 }
 
-async function embedPngFromDataUrl(pdfDoc, dataUrl) {
+async function embedImageFromDataUrl(pdfDoc, dataUrl, fallbackMimeType = "") {
   try {
-    const base64 = dataUrl.split(",")[1];
-    const binary = atob(base64);
+    const match = String(dataUrl || "").match(/^data:([^;]+);base64,(.+)$/i);
+    if (!match) return null;
+
+    const mimeType = (match[1] || fallbackMimeType || "").toLowerCase();
+    const binary = atob(match[2]);
     const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-    const image = await pdfDoc.embedPng(bytes);
-    return { image, width: image.width, height: image.height };
+
+    for (let i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+
+    let image = null;
+
+    if (mimeType.includes("png")) {
+      image = await pdfDoc.embedPng(bytes);
+    } else if (mimeType.includes("jpeg") || mimeType.includes("jpg")) {
+      image = await pdfDoc.embedJpg(bytes);
+    } else {
+      console.warn("Image embed skipped: unsupported MIME type", mimeType);
+      return null;
+    }
+
+    return {
+      image,
+      width: image.width,
+      height: image.height,
+      mimeType
+    };
   } catch (error) {
     console.warn("Image embed skipped:", error);
     return null;
