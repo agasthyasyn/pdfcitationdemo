@@ -1470,6 +1470,40 @@ function buildDocumentModelFromSemanticModel({ semanticModel, sourcePdf }) {
   };
 }
 
+function renderFlexibleDetectedDetails(templateStyleProfile, documents) {
+  if (!els.detectedDetails) return;
+
+  const documentCount = Array.isArray(documents) ? documents.length : 0;
+  const sectionCount = (documents || []).reduce(
+    (sum, doc) => sum + (Array.isArray(doc.sections) ? doc.sections.length : 0),
+    0
+  );
+  const imageCount = (documents || []).reduce(
+    (sum, doc) =>
+      sum +
+      (doc.sections || []).reduce(
+        (innerSum, section) =>
+          innerSum +
+          (section.blocks || []).filter((block) => block.type === "image").length,
+        0
+      ),
+    0
+  );
+
+  els.detectedDetails.innerHTML = `
+    <div><strong>Processing Model:</strong> Source-first flexible reconstruction</div>
+    <div><strong>Template Role:</strong> Style reference only</div>
+    <div><strong>Documents:</strong> ${documentCount}</div>
+    <div><strong>Sections Generated:</strong> ${sectionCount}</div>
+    <div><strong>Image Blocks Preserved:</strong> ${imageCount}</div>
+    <div><strong>Template Style:</strong> ${
+      templateStyleProfile?.sectionStyle?.usesNumberedSections
+        ? "Numbered sections detected"
+        : "General clean document style"
+    }</div>
+  `;
+}
+
 async function processDocuments() {
   if (!state.templateFile) {
     setStatus("Please upload a sample/template PDF first.", "error");
@@ -1537,12 +1571,12 @@ async function processDocuments() {
       documents
     };
 
-    renderPreview(documents);
-    renderDetectedDetails(templateStyleProfile, documents);
-    renderVisualPreview(documents);
+   renderPreview(documents);
+   renderFlexibleDetectedDetails(templateStyleProfile, documents);
+   renderVisualPreview(documents);
 
-    els.exportPdfBtn.disabled = false;
-    els.exportAuditBtn.disabled = false;
+els.exportPdfBtn.disabled = false;
+els.exportAuditBtn.disabled = false;
 
     setStatus("Processing complete. Review the preview before exporting.", "success");
   } catch (error) {
