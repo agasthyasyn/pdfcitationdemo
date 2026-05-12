@@ -3657,6 +3657,288 @@ for (const block of section.blocks) {
   return cleanBusinessContent(lines.join("\n"));
 }
 
+async function generatePdf(documents) {
+  const pdfDoc = await PDFDocument.create();
+
+  const regularFont = await pdfDoc.embedFont(StandardFonts.Helvetica);
+  const boldFont = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+
+  const layout = {
+    width: CONFIG.output.pageWidth,
+    height: CONFIG.output.pageHeight,
+    margin: CONFIG.output.margin,
+    bodySize: CONFIG.output.bodyFontSize,
+    headingSize: CONFIG.output.headingFontSize,
+    titleSize: CONFIG.output.titleFontSize,
+    lineHeight: CONFIG.output.lineHeight,
+    paragraphGap: CONFIG.output.paragraphGap,
+    sectionGap: CONFIG.output.sectionGap,
+    figureMaxHeight: CONFIG.output.figureMaxHeight
+  };
+
+  let page = null;
+  let cursorY = 0;
+
+  function newPage() {
+    page = pdfDoc.addPage([layout.width, layout.height]);
+    cursorY = layout.height - layout.margin;
+    return page;
+  }
+
+  function ensureSpace(requiredHeight = 40) {
+    if (!page || cursorY - requiredHeight < layout.margin) {
+      newPage();
+    }
+  }
+
+  function drawTextLine(text, x, y, options = {}) {
+    page.drawText(String(text || ""), {
+      x,
+      y,
+      size: options.size || layout.bodySize,
+      font: options.bold ? boldFont : regularFont,
+      color: options.color || rgb(0.08, 0.08, 0.08)
+    });
+  }
+
+  function wrapText(text, font, size, maxWidth) {
+    const words = String(text || "").split(/\s+/).filter(Boolean);
+    const lines = [];
+    let line = "";
+
+    for (const word of words) {
+      const testLine = line ? `${line} ${word}` : word;
+      const width = font.widthOfTextAtSize(testLine, size);
+
+      if (width > maxWidth && line) {
+        lines.push(line);
+        line = word;
+      } else {
+        line = testLine;
+      }
+    }
+
+    if (line) lines.push(line);
+    return lines;
+  }
+
+  function drawWrappedParagraph(text, options = {}) {
+    const clean = normalizeLine(text || "");
+    if (!clean) return;
+
+    const font = options.bold ? boldFont : regularFont;
+    const size = options.size || layout.bodySize;
+    const maxWidth = layout.width - layout.margin * 2;
+    const lines = wrapText(clean, font, size, maxWidth);
+
+    for (const line of lines) {
+      ensureSpace(layout.lineHeight + 4);
+      drawTextLine(line, layout.margin, cursorY, {
+        size,
+        bold: options.bold,
+        color: options.color
+      });
+      cursorY -= layout.lineHeight;
+    }
+
+    cursorY -= options.gap ?? layout.paragraphGap;
+  }
+
+  function parseDataUrl(dataUrl) {
+    const match = String(dataUrl || "").match(/^data:([^;]+);base64,(.+)$/i);
+    if (!match) return null;
+
+    const mimeType = match[1].toLowerCase();
+    const binary = atob(match[2]);
+    const bytes = new Uint8Array(binary.length);
+
+    for (let i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+
+    return { mimeType, bytes };
+  }
+
+  async function embedImage(dataUrl, fallbackMimeType = "") {
+    const parsed = parseDataUrl(dataUrl);
+    if (!parsed) return null;
+
+    const mimeType = parsed.mimeType || String(fallbackMimeType || "").toLowerCase();
+
+    if (mimeType.includes("png")) {
+      return await pdfDoc.embedPng(parsed.bytes);
+    }
+
+    if (mimeType.includes("jpeg") || mimeType.includes("jpg")) {
+      return await pdfDoc.embedJpg(parsed.bytes);
+    }
+
+    console.warn("Image embed skipped: unsupported MIME type", mimeType);
+    return null;
+  }
+
+  async function drawImageBlock(block) {
+    if (!block?.imageDataUrl) {
+      drawWrappedParagraph(`[Image retained: ${block?.caption || "Visual reference"}]`);
+      return;
+    }
+
+    let embeddedImage = null;
+
+    try {
+      embeddedImage = await embedImage(block.imageDataUrl, block.imageMimeType);
+    } catch (error) {
+      console.warn("Image embed failed", {
+        caption: block.caption,
+        sourcePage: block.sourcePage || block.pageNumber,
+        mimeType: block.imageMimeType,
+        error
+      });
+    }
+
+    if (!embeddedImage) {
+      drawWrappedParagraph(`[Image could not be embedded: ${block.caption || "Visual reference"}]`);
+      return;
+    }
+
+    const maxWidth = layout.width - layout.margin * 2;
+    const maxHeight = layout.figureMaxHeight;
+
+    const scale = Math.min(
+      maxWidth / embeddedImage.width,
+      maxHeight / embeddedImage.height,
+      1
+    );
+
+    const imageWidth = embeddedImage.width * scale;
+    const imageHeight = embeddedImage.height * scale;
+
+    ensureSpace(imageHeight + 34);
+
+    page.drawImage(embeddedImage, {
+      x: layout.margin,
+      y: cursorY - imageHeight,
+      width: imageWidth,
+      height: imageHeight
+    });
+
+    cursorY -= imageHeight + 8;
+
+    const caption = normalizeLine(
+      block.caption || block.text || `Visual reference from page ${block.sourcePage || block.pageNumber || ""}`
+    );
+
+    if (caption) {
+      drawWrappedParagraph(caption, {
+        size: 8.5,
+        gap: 8,
+        color: rgb(0.25, 0.25, 0.25)
+      });
+    }
+  }
+
+  function drawTableBlock(block) {
+    const headers = Array.isArray(block.headers) ? block.headers : [];
+    const rows = Array.isArray(block.rows) ? block.rows : [];
+
+    if (headers.length) {
+      drawWrappedParagraph(headers.join(" | "), { bold: true, gap: 3 });
+    }
+
+    for (const row of rows) {
+      const cells = Array.isArray(row) ? row : [row];
+      drawWrappedParagraph(cells.map((cell) => normalizeLine(cell || "")).join(" | "), {
+        gap: 3
+      });
+    }
+
+    cursorY -= 5;
+  }
+
+  async function drawBlock(block) {
+    if (!block) return;
+
+    if (block.type === "text") {
+      const paragraphs = Array.isArray(block.paragraphs) && block.paragraphs.length
+        ? block.paragraphs
+        : [block.text || block.content || ""];
+
+      for (const paragraph of paragraphs) {
+        drawWrappedParagraph(paragraph);
+      }
+
+      return;
+    }
+
+    if (block.type === "list") {
+      const items = Array.isArray(block.items) ? block.items : [];
+
+      for (const item of items) {
+        drawWrappedParagraph(`• ${item}`, { gap: 2 });
+      }
+
+      cursorY -= 5;
+      return;
+    }
+
+    if (block.type === "table") {
+      drawTableBlock(block);
+      return;
+    }
+
+    if (block.type === "image") {
+      await drawImageBlock(block);
+      return;
+    }
+
+    drawWrappedParagraph(block.text || block.content || "");
+  }
+
+  for (const doc of documents || []) {
+    newPage();
+
+    drawWrappedParagraph(cleanDocumentTitle(doc.title || "Document"), {
+      bold: true,
+      size: layout.titleSize,
+      gap: 12
+    });
+
+    if (Array.isArray(doc.summaryRows) && doc.summaryRows.length) {
+      drawWrappedParagraph("Key Information", {
+        bold: true,
+        size: layout.headingSize,
+        gap: 8
+      });
+
+      for (const row of doc.summaryRows) {
+        drawWrappedParagraph(`${row.label}: ${row.value || getFallbackValue()}`, {
+          gap: 3
+        });
+      }
+
+      cursorY -= 8;
+    }
+
+    for (const section of doc.sections || []) {
+      ensureSpace(55);
+
+      drawWrappedParagraph(cleanHeading(section.heading || "Section"), {
+        bold: true,
+        size: layout.headingSize,
+        gap: 8
+      });
+
+      for (const block of section.blocks || []) {
+        await drawBlock(block);
+      }
+
+      cursorY -= layout.sectionGap;
+    }
+  }
+
+  return await pdfDoc.save();
+}
+
 async function exportPdf() {
   if (!state.documents.length) {
     setStatus("No processed document available to export.", "error");
