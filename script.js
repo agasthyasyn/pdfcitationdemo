@@ -1546,22 +1546,23 @@ let renderedPage = null;
 let pageImage = null;
 let visualCandidates = [];
 
-if (collectPageImages || (collectVisuals && boolRule(getDetectionRules().detectVisuals, false))) {
+if (collectPageImages || collectVisuals) {
   renderedPage = await renderPageToDataUrl(page, 1.25, "image/jpeg", 0.72);
 }
 
 if (collectPageImages && renderedPage) {
-pageImage = {
-  pageNumber,
-  imageDataUrl: renderedPage.dataUrl,
-  width: renderedPage.width,
-  height: renderedPage.height,
-  scale: renderedPage.scale,
-  imageMimeType: renderedPage.mimeType || "image/jpeg",
-  mimeType: renderedPage.mimeType || "image/jpeg"
-};
-  
-if (collectVisuals && boolRule(getDetectionRules().detectVisuals, false) && renderedPage) {
+  pageImage = {
+    pageNumber,
+    imageDataUrl: renderedPage.dataUrl,
+    width: renderedPage.width,
+    height: renderedPage.height,
+    scale: renderedPage.scale,
+    imageMimeType: renderedPage.mimeType || "image/jpeg",
+    mimeType: renderedPage.mimeType || "image/jpeg"
+  };
+}
+
+if (collectVisuals && renderedPage) {
   visualCandidates = detectVisualCandidates({
     pageNumber,
     viewport,
