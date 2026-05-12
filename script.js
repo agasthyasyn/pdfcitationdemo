@@ -640,11 +640,88 @@ function isUsableSemanticModel(semanticModel) {
 function hasAiBlockContent(block) {
   if (!block) return false;
 
-  if (Array.isArray(block.paragraphs) && block.paragraphs.some((item) => normalizeLine(item || ""))) {
-    return true;
-  }
+  if (Array.isArray(block.paragraphs) && block.paragraphs.some((item) => normalizeLine(item || ""))) return true;
+  if (Array.isArray(block.items) && block.items.some((item) => normalizeLine(item || ""))) return true;
+  if (Array.isArray(block.rows) && block.rows.length) return true;
+  if (normalizeLine(block.caption || "")) return true;
 
   return Boolean(normalizeLine(block.text || block.content || ""));
+}
+
+function normalizeAiBlock(block) {
+  const type = comparable(block?.type || "text");
+
+  if (type === "list" || Array.isArray(block?.items)) {
+    const items = (block.items || [])
+      .map((item) => normalizeLine(item || ""))
+      .filter(Boolean);
+
+    return {
+      type: "list",
+      items,
+      text: items.map((item) => `• ${item}`).join("\n"),
+      sourceHeading: block.sourceHeading || "",
+      pageNumbers: block.sourcePage ? [block.sourcePage] : []
+    };
+  }
+
+  if (type === "table" || Array.isArray(block?.rows)) {
+    const headers = Array.isArray(block.headers)
+      ? block.headers.map((item) => normalizeLine(item || "")).filter(Boolean)
+      : [];
+
+    const rows = Array.isArray(block.rows)
+      ? block.rows.map((row) =>
+          Array.isArray(row)
+            ? row.map((cell) => normalizeLine(cell || ""))
+            : [normalizeLine(row || "")]
+        )
+      : [];
+
+    return {
+      type: "table",
+      headers,
+      rows,
+      text: [
+        headers.length ? headers.join(" | ") : "",
+        ...rows.map((row) => row.join(" | "))
+      ].filter(Boolean).join("\n"),
+      sourceHeading: block.sourceHeading || "",
+      pageNumbers: block.sourcePage ? [block.sourcePage] : []
+    };
+  }
+
+  if (type === "image" || type === "visual") {
+    const caption = normalizeLine(block.caption || block.description || block.content || "");
+
+    return {
+      type: "image",
+      caption,
+      text: caption,
+      imageRefId: block.imageRefId || "",
+      sourceHeading: block.sourceHeading || "",
+      pageNumbers: block.sourcePage ? [block.sourcePage] : []
+    };
+  }
+
+  const paragraphs = normalizeAiParagraphs(block);
+
+  return {
+    type: "text",
+    text: paragraphs.join("\n\n"),
+    paragraphs,
+    sourceHeading: block.sourceHeading || "",
+    pageNumbers: block.sourcePage ? [block.sourcePage] : []
+  };
+}
+
+function hasRenderableBlock(block) {
+  if (!block) return false;
+  if (block.type === "text") return Boolean(normalizeLine(block.text || ""));
+  if (block.type === "list") return Array.isArray(block.items) && block.items.length > 0;
+  if (block.type === "table") return Array.isArray(block.rows) && block.rows.length > 0;
+  if (block.type === "image") return Boolean(normalizeLine(block.caption || block.text || ""));
+  return Boolean(normalizeLine(block.text || ""));
 }
 
 function normalizeAiParagraphs(block) {
@@ -914,17 +991,11 @@ return {
     const blocks = Array.isArray(section.blocks)
       ? section.blocks
           .filter((block) => hasAiBlockContent(block))
-          .map((block) => {
-            const paragraphs = normalizeAiParagraphs(block);
-
-            return {
-              type: "text",
-              text: paragraphs.join("\n\n"),
-              paragraphs,
-              sourceHeading: section.heading || "",
-              pageNumbers: block.sourcePage ? [block.sourcePage] : []
-            };
-          })
+          .map((block) => ({
+          ...normalizeAiBlock(block),
+         sourceHeading: section.heading || "",
+         pageNumbers: block.sourcePage ? [block.sourcePage] : []
+        }))
       : [];
 
     return {
@@ -939,7 +1010,7 @@ return {
   })
   .filter((section) =>
     section.heading &&
-    section.blocks.some((block) => block.type === "text" && block.text.trim())
+    section.blocks.some((block) => hasRenderableBlock(block))
   );
 
 const coverageSection = buildCoverageAuditSection(semanticModel, sections.length + 1);
