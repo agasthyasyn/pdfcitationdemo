@@ -1103,17 +1103,23 @@ function normalizeAiBlock(block) {
   }
 
   if (type === "image" || type === "visual") {
-    const caption = normalizeLine(block.caption || block.description || block.content || "");
+  const caption = normalizeLine(
+    block.caption || block.description || block.content || block.text || "Visual reference"
+  );
 
-    return {
-      type: "image",
-      caption,
-      text: caption,
-      imageRefId: block.imageRefId || "",
-      sourceHeading: block.sourceHeading || "",
-      pageNumbers: block.sourcePage ? [block.sourcePage] : []
-    };
-  }
+  return {
+    type: "image",
+    caption,
+    text: caption,
+    imageAssetId: block.imageAssetId || block.assetId || block.imageRefId || "",
+    assetId: block.assetId || block.imageAssetId || block.imageRefId || "",
+    imageRefId: block.imageRefId || block.imageAssetId || block.assetId || "",
+    sourcePage: Number(block.sourcePage || block.pageNumber || 0) || null,
+    pageNumber: Number(block.sourcePage || block.pageNumber || 0) || null,
+    sourceHeading: block.sourceHeading || "",
+    pageNumbers: block.sourcePage ? [block.sourcePage] : []
+  };
+}
 
   const paragraphs = normalizeAiParagraphs(block);
 
@@ -1305,11 +1311,15 @@ function materializeImageBlocksFromSourcePages({ semanticModel, sourcePdf, secti
   const imageAssets = semanticModel?.roughSourceImport?.buckets?.images || [];
   const imageByAssetId = new Map(imageAssets.map((image) => [image.assetId, image]));
 
+  let imageBlockCount = 0;
+
   for (const section of sections) {
     for (const block of section.blocks || []) {
       if (block.type !== "image") continue;
 
-      const assetId = block.imageAssetId || block.assetId || "";
+      imageBlockCount++;
+
+      const assetId = block.imageAssetId || block.assetId || block.imageRefId || "";
       const asset = assetId ? imageByAssetId.get(assetId) : null;
 
       if (asset?.imageDataUrl) {
@@ -1320,7 +1330,9 @@ function materializeImageBlocksFromSourcePages({ semanticModel, sourcePdf, secti
         block.pageNumber = asset.sourcePage || block.sourcePage || null;
         block.sourcePage = asset.sourcePage || block.sourcePage || null;
         block.pageNumbers = block.sourcePage ? [block.sourcePage] : [];
-        block.caption = normalizeLine(block.caption || asset.captionGuess || `Visual reference from page ${block.sourcePage}`);
+        block.caption = normalizeLine(
+          block.caption || asset.captionGuess || `Visual reference from page ${block.sourcePage}`
+        );
         block.text = block.caption;
         continue;
       }
@@ -1344,15 +1356,46 @@ function materializeImageBlocksFromSourcePages({ semanticModel, sourcePdf, secti
         block.pageNumber = pageNumber;
         block.sourcePage = pageNumber;
         block.pageNumbers = [pageNumber];
-        block.caption = normalizeLine(block.caption || block.text || `Visual reference from page ${pageNumber}`);
+        block.caption = normalizeLine(
+          block.caption || block.text || `Visual reference from page ${pageNumber}`
+        );
         block.text = block.caption;
       }
     }
   }
 
+  // If AI did not create image blocks, still preserve the page screenshots.
+  if (!imageBlockCount && imageAssets.length) {
+    const visualSection = {
+      id: `ai-visual-section-${sections.length + 1}`,
+      order: sections.length + 1,
+      heading: "Visual References",
+      blocks: imageAssets.slice(0, 12).map((asset) => ({
+        type: "image",
+        imageAssetId: asset.assetId,
+        assetId: asset.assetId,
+        imageDataUrl: asset.imageDataUrl,
+        imageMimeType: asset.imageMimeType || detectDataUrlMime(asset.imageDataUrl),
+        imageWidth: asset.width || 0,
+        imageHeight: asset.height || 0,
+        pageNumber: asset.sourcePage || null,
+        sourcePage: asset.sourcePage || null,
+        pageNumbers: asset.sourcePage ? [asset.sourcePage] : [],
+        caption: normalizeLine(asset.captionGuess || `Visual reference from page ${asset.sourcePage}`),
+        text: normalizeLine(asset.captionGuess || `Visual reference from page ${asset.sourcePage}`)
+      })),
+      matchedSourceIds: [],
+      score: 1,
+      pageNumbers: uniqueNumbers(
+        imageAssets.map((asset) => asset.sourcePage).filter(Boolean)
+      )
+    };
+
+    sections.push(visualSection);
+  }
+
   return sections;
 }
-
 function buildDocumentModelFromSemanticModel({ semanticModel, sourcePdf }) {
   if (!semanticModel || typeof semanticModel !== "object") {
     throw new Error("AI reconstruction returned an empty or invalid model.");
@@ -3883,6 +3926,19 @@ async function embedPngFromDataUrl(pdfDoc, dataUrl) {
     console.warn("Image embed skipped:", error);
     return null;
   }
+}
+
+
+function getLineStyle(scoreOrValue) {
+  const value = Number(scoreOrValue || 0);
+
+  if (!Number.isFinite(value)) return "";
+
+  if (value >= 0.75) return "success";
+  if (value >= 0.45) return "info";
+  if (value > 0) return "warning";
+
+  return "";
 }
 
 /* =========================================================
