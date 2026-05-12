@@ -110,92 +110,44 @@ function buildPagesText(pages) {
 }
 
 function getMaxOutputTokens(mode) {
-  if (mode === "identity_summary") return 2500;
   if (mode === "vision_page") return 3500;
-  if (mode === "coverage_chunk") return 4000;
-  if (mode === "final_format") return 6500;
-  return 4000;
+  if (mode === "reconstruct_document") return 9000;
+  return 5000;
 }
 
 function buildPrompt(payload) {
-  const mode = payload.mode || "final_format";
+  const mode = payload.mode || "reconstruct_document";
   const fileName = String(payload.fileName || "").trim();
-  const template = getTemplatePayload(payload.template);
-  const sourceIdentity = payload.sourceIdentity || {};
-  const summaryRows = Array.isArray(payload.summaryRows) ? payload.summaryRows : [];
-  const coverageItems = Array.isArray(payload.coverageItems) ? payload.coverageItems : [];
-  const visionPages = Array.isArray(payload.visionPages) ? payload.visionPages : [];
-  if (mode === "identity_summary") {
-    const firstPagesText = clipText(payload.firstPagesText || payload.sourceText || "", 16000);
+
+  const page =
+    payload.page && typeof payload.page === "object"
+      ? payload.page
+      : {};
+
+  const sourceContext =
+    payload.sourceContext && typeof payload.sourceContext === "object"
+      ? payload.sourceContext
+      : {};
+
+  const roughSourceImport =
+    payload.roughSourceImport && typeof payload.roughSourceImport === "object"
+      ? payload.roughSourceImport
+      : {};
+
+  const templateStyleProfile =
+    payload.templateStyleProfile && typeof payload.templateStyleProfile === "object"
+      ? payload.templateStyleProfile
+      : {};
+
+  if (mode === "vision_page") {
+    const pageNumber = page.pageNumber || null;
+    const extractedText = clipText(page.extractedText || "", 5000);
 
     return `
-You are the first brain of a document formatting tool.
+You are the vision extraction brain for a flexible document formatting tool.
 
 Task:
-Identify the source document and fill only the summary/header fields from the source.
-
-Return valid JSON only. No markdown. No code fences.
-
-Required JSON:
-{
-  "title": "",
-  "sourceIdentity": {
-    "documentType": "",
-    "primarySubject": "",
-    "vesselName": "",
-    "portName": "",
-    "country": "",
-    "dateOrPeriod": "",
-    "confidence": 0
-  },
-  "summaryRows": [
-    {
-      "key": "",
-      "label": "",
-      "value": "",
-      "confidence": 0,
-      "evidence": "",
-      "sourcePage": null
-    }
-  ],
-  "warnings": []
-}
-
-Template title:
-${template.title}
-
-Template header fields:
-${JSON.stringify(template.headerFields, null, 2)}
-
-Rules:
-- The source document is the factual authority.
-- The template fields are targets for allocation, not facts.
-- Return exactly one summaryRows item for every template header field.
-- Use exact key and exact label from the template field.
-- Map by meaning, not only keyword matching.
-- Do not place body sentences, warnings, phone fragments, unrelated numbers, or operational paragraphs into summary fields.
-- If a field is genuinely missing, use "Not Available".
-- Evidence must come from the supplied source text.
-- Keep this response compact.
-
-File name:
-${fileName}
-
-Source text:
-${firstPagesText}
-`;
-  }
-
-if (mode === "vision_page") {
-  const page = payload.page && typeof payload.page === "object" ? payload.page : {};
-  const pageNumber = page.pageNumber || null;
-  const extractedText = clipText(page.extractedText || "", 5000);
-
-  return `
-You are the vision extraction brain for a document formatting tool.
-
-Task:
-Read the full page image and the available PDF text extraction. Recover useful text, tables, lists, visual meaning, and page layout that may be missing or corrupted in normal PDF text extraction.
+Read the full page image and the available PDF text extraction. Recover visible text, headings, lists, tables, layout meaning, screenshots, charts, photos, diagrams, and any word-based information that may be missing or corrupted in normal PDF text extraction.
 
 Return valid JSON only. No markdown. No code fences.
 
@@ -230,38 +182,32 @@ Required JSON:
   ],
   "visualBlocks": [
     {
-      "kind": "photo",
+      "kind": "photo|chart|map|diagram|screenshot|table_image|other",
       "description": "",
       "caption": "",
       "position": "middle",
       "importance": "medium"
     }
   ],
-  "coverageItems": [
-    {
-      "theme": "",
-      "detail": "",
-      "importance": "high",
-      "sourcePage": null,
-      "evidence": ""
-    }
-  ],
   "warnings": []
 }
 
-Source identity:
-${JSON.stringify(sourceIdentity, null, 2)}
+Source context:
+${JSON.stringify(sourceContext, null, 2)}
 
 Rules:
 - Use the image as the primary source when PDF text extraction is broken.
 - Use extracted PDF text only as support.
-- Recover visible headings, labels, values, table rows, list items, contact details, measurements, warnings, dates, rates, quantities, and restrictions.
+- Do not assume this is a port document.
+- Do not use country lists, vessel lists, port lists, or domain-specific assumptions.
+- Recover visible headings, labels, values, table rows, list items, contact details, dates, amounts, quantities, restrictions, instructions, and notes when readable.
 - Preserve table structure where visible.
 - Preserve list structure where visible.
-- Identify meaningful photos, charts, screenshots, maps, and diagrams as visualBlocks.
+- Identify meaningful photos, charts, screenshots, maps, diagrams, and scanned text areas as visualBlocks.
+- If a screenshot contains word-based information, describe the readable information clearly.
 - Do not invent hidden text.
 - Do not over-read unreadable blurry text.
-- If a value is unreadable, say "Unreadable" in warnings, not as a fact.
+- If a value is unreadable, add it to warnings, not as a fact.
 - Page position must be one of: top, upper, middle, lower, bottom, full_page.
 - Keep output compact.
 
@@ -274,80 +220,54 @@ ${pageNumber}
 PDF extracted text for this page:
 ${extractedText}
 `;
-}
-
-  if (mode === "coverage_chunk") {
-    const pagesText = buildPagesText(payload.pages);
-    const chunkId = String(payload.chunkId || "").trim();
-
-    return `
-You are the second brain of a document formatting tool.
-
-Task:
-Read this source chunk and extract reader-critical details that must not be lost during formatting.
-
-Return valid JSON only. No markdown. No code fences.
-
-Required JSON:
-{
-  "chunkId": "",
-  "pageNumbers": [],
-  "coverageItems": [
-    {
-      "theme": "",
-      "detail": "",
-      "importance": "high",
-      "sourcePage": null,
-      "evidence": ""
-    }
-  ],
-  "warnings": []
-}
-
-Source identity:
-${JSON.stringify(sourceIdentity, null, 2)}
-
-Vision extraction for these pages:
-${JSON.stringify(visionPages, null, 2)}
-
-Rules:
-- Extract operationally important details, not decorative text.
-- Preserve instructions, warnings, restrictions, dates, contacts, limits, rates, quantities, operational steps, exceptions, services, responsibilities, safety/security notes, and compliance notes.
-- Keep each coverage item as one clear detail.
-- Do not rewrite into long paragraphs.
-- Do not invent missing details.
-- If a table is present but broken, extract the important facts visible in the text.
-- If the chunk has visual/chart/photo context mentioned in text, capture the useful context as a coverage item.
-- Maximum 25 coverageItems for this chunk.
-- Avoid duplicates inside this chunk.
-
-File name:
-${fileName}
-
-Chunk ID:
-${chunkId}
-
-Source chunk:
-${pagesText}
-`;
   }
 
-  const limitedCoverageItems = coverageItems.slice(0, 120);
+  if (mode === "reconstruct_document") {
+    return `
+You are the semantic reconstruction brain for a flexible document formatting tool.
 
-  return `
-You are the final formatting brain for a document formatting tool.
+You are given:
+1. A rough source import created by JavaScript.
+2. A template style profile extracted from a sample document.
 
-Task:
-Create a clean, clear, professional document model using:
-1. the template as a reader-friendly reference,
-2. the source identity and summary rows as factual anchors,
-3. the coverage items as mandatory details that must not be lost.
+Important:
+- The rough source import is the factual source.
+- The template is only a style/reference guide.
+- Do not force the source into the exact same fields or sections as the template.
+- Do not copy facts from the template.
+- Do not invent missing values.
+- Do not assume this is a port document.
+- Do not use country lists, vessel lists, port lists, or any domain-specific fixed schema.
+- Preserve source information as completely as possible.
+- The rough import may be imperfect, misaligned, duplicated, or partially wrong.
+- Use semantic reasoning to rebuild the source into a clean, meaningful document.
+- Use image/vision notes when screenshots, scanned pages, charts, photos, maps, or visual text are present.
+- If an image contains readable word-based information in the vision notes, convert that information into clean paragraphs, lists, tables, or sections.
+- If an image is a photo/chart/map/visual reference, preserve it as an image block with sourcePage and caption.
+- Do not output system notes, audit notes, rough import labels, source import labels, or template explanations.
 
 Return valid JSON only. No markdown. No code fences.
 
 Required JSON:
 {
   "title": "",
+  "documentProfile": {
+    "documentType": "",
+    "primaryTitle": "",
+    "likelySubject": "",
+    "importantEntities": [
+      {
+        "label": "",
+        "value": "",
+        "role": "",
+        "confidence": 0,
+        "evidence": "",
+        "sourcePage": null
+      }
+    ],
+    "dateOrPeriod": "",
+    "confidence": 0
+  },
   "summaryRows": [
     {
       "key": "",
@@ -358,14 +278,13 @@ Required JSON:
       "sourcePage": null
     }
   ],
-    "sections": [
+  "sections": [
     {
       "heading": "",
       "blocks": [
         {
           "type": "text",
           "paragraphs": [],
-          "content": "",
           "sourcePage": null
         },
         {
@@ -381,79 +300,36 @@ Required JSON:
         },
         {
           "type": "image",
-          "caption": "",
-          "description": "",
-          "sourcePage": null
+          "imageAssetId": "",
+          "sourcePage": null,
+          "caption": ""
         }
       ]
     }
   ],
   "coverageAudit": {
-    "sourceCoverageMode": "coverage_first",
-    "importantSourceThemesCovered": [],
-    "additionalOperationalNotes": [],
-    "unmappedImportantDetails": [],
     "possibleOmissions": [],
-    "coverageConfidence": 0
+    "sourceCoverageMode": "flexible_rough_import_reconstruction"
   },
   "warnings": []
 }
 
-Template title:
-${template.title}
+Template style profile:
+${JSON.stringify(templateStyleProfile, null, 2)}
 
-Template header fields:
-${JSON.stringify(template.headerFields, null, 2)}
-
-Template sections:
-${JSON.stringify(template.sections, null, 2)}
-
-Source identity:
-${JSON.stringify(sourceIdentity, null, 2)}
-
-Pre-extracted summary rows:
-${JSON.stringify(summaryRows, null, 2)}
-
-Mandatory coverage items:
-${JSON.stringify(limitedCoverageItems, null, 2)}
-
-Vision page intelligence:
-${JSON.stringify(visionPages.slice(0, 20), null, 2)}
-
-Rules:
-- The template is only a reference for structure and readability.
-- The source identity, summary rows, coverage items, and compact vision intelligence are the factual authority.
-- Do not copy sample/template-specific facts unless they are present in the source identity, summary rows, coverage items, or vision intelligence.
-- Return exactly one summaryRows item for every template header field.
-- Prefer the pre-extracted summaryRows when they are valid.
-- Build clean body sections from the mandatory coverage items and vision intelligence.
-- Do not drop high-importance coverage items.
-- If a coverage item does not fit neatly into the main sections, preserve it under coverageAudit.additionalOperationalNotes.
-- Use enough sections to preserve important source information, but avoid duplicate or meaningless sections.
-- Use paragraph arrays for every text block.
-- Each paragraph must be readable, complete, and focused.
-- Do not create one long wall of text.
-- Do not over-compress operational restrictions, warnings, document requirements, contacts, measurements, dates, rates, or instructions.
-- Avoid exact duplication.
-- Keep the final model useful, structured, and source-faithful.
-
-HTML/document structure rules:
-- Treat every section as a future <section> block.
-- Text body content must use text blocks with paragraphs, equivalent to future <p>...</p>.
-- Step-by-step instructions, warnings, requirements, document lists, and grouped points should use list blocks, equivalent to future <li>...</li>.
-- Visible tables from the source or vision extraction should use table blocks with headers and rows.
-- Meaningful photos, screenshots, berth visuals, cargo photos, maps, and charts should use image blocks with captions and sourcePage.
-- Do not flatten lists and tables into long paragraphs when structure is visible.
-- Do not create literal HTML tags in the JSON values.
-- Use JSON block types only: text, list, table, image.
+Rough source import:
+${JSON.stringify(roughSourceImport, null, 2)}
 
 File name:
 ${fileName}
 `;
+  }
+
+  throw new Error(`Unsupported prompt mode: ${mode}`);
 }
 
 function buildOpenAIInput(payload, prompt) {
-  const mode = payload.mode || "final_format";
+  const mode = payload.mode || "reconstruct_document";
 
   if (mode === "vision_page") {
     const imageDataUrl = payload?.page?.imageDataUrl || "";
@@ -511,7 +387,7 @@ exports.handler = async function (event) {
       message: "semantic-map function is live",
       checkedAt: new Date().toISOString(),
       hasOpenAIKey: Boolean(process.env.OPENAI_API_KEY),
-      modes: ["identity_summary", "coverage_chunk", "final_format"]
+      modes: ["vision_page", "reconstruct_document"]
     });
   }
 
@@ -531,15 +407,14 @@ exports.handler = async function (event) {
     }
 
     const payload = JSON.parse(event.body || "{}");
-    const mode = payload.mode || "final_format";
-    const template = getTemplatePayload(payload.template);
+    const mode = payload.mode || "reconstruct_document";
 
-    if (!["identity_summary", "vision_page", "coverage_chunk", "final_format"].includes(mode)) {
-      return jsonResponse(400, headers, {
-        ok: false,
-        error: `Unsupported semantic-map mode: ${mode}`
-      });
-    }
+    if (!["vision_page", "reconstruct_document"].includes(mode)) {
+    return jsonResponse(400, headers, {
+    ok: false,
+    error: `Unsupported semantic-map mode: ${mode}`
+  });
+}
 
     if ((mode === "identity_summary" || mode === "final_format") && !template.headerFields.length) {
       return jsonResponse(400, headers, {
