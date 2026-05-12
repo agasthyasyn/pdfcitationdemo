@@ -372,9 +372,7 @@ function isUsableSemanticModel(semanticModel) {
 
   const hasAnySectionContent = sections.some((section) =>
     Array.isArray(section.blocks) &&
-    section.blocks.some((block) =>
-      normalizeLine(block?.text || block?.content || "")
-    )
+    section.blocks.some((block) => hasAiBlockContent(block))
   );
 
   return hasAnySummaryValue || hasAnySectionContent;
@@ -414,6 +412,72 @@ function normalizeAiParagraphs(block) {
 
 function paragraphTextFromAiBlock(block) {
   return normalizeAiParagraphs(block).join("\n\n");
+}
+
+function normalizeCoverageNoteList(value) {
+  if (!value) return [];
+
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => normalizeLine(item || ""))
+      .filter(Boolean);
+  }
+
+  if (typeof value === "string") {
+    return value
+      .split(/\n+|;\s+(?=[A-Z])/)
+      .map((item) => normalizeLine(item))
+      .filter(Boolean);
+  }
+
+  return [];
+}
+
+function buildCoverageAuditSection(semanticModel, nextOrder) {
+  const audit = semanticModel?.coverageAudit && typeof semanticModel.coverageAudit === "object"
+    ? semanticModel.coverageAudit
+    : null;
+
+  if (!audit) return null;
+
+  const notes = [
+    ...normalizeCoverageNoteList(audit.additionalOperationalNotes),
+    ...normalizeCoverageNoteList(audit.unmappedImportantDetails),
+    ...normalizeCoverageNoteList(audit.possibleOmissions)
+  ]
+    .map((item) => cleanBusinessContent(item))
+    .map((item) => normalizeLine(item))
+    .filter(Boolean);
+
+  const uniqueNotes = [];
+  const seen = new Set();
+
+  for (const note of notes) {
+    const key = comparable(note);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    uniqueNotes.push(note);
+  }
+
+  if (!uniqueNotes.length) return null;
+
+  return {
+    id: "ai-coverage-audit-notes",
+    order: nextOrder,
+    heading: "Additional Operational Notes",
+    blocks: [
+      {
+        type: "text",
+        text: uniqueNotes.join("\n\n"),
+        paragraphs: uniqueNotes,
+        sourceHeading: "Coverage Audit",
+        pageNumbers: []
+      }
+    ],
+    matchedSourceIds: [],
+    score: 1,
+    pageNumbers: []
+  };
 }
 
 function buildDocumentModelFromSemanticModel({ semanticModel, sourcePdf, templateContract, sourceProfile = null }) {  const fallbackValue = getFallbackValue();
@@ -485,39 +549,45 @@ const summaryRows = (templateContract.headerFields || []).map((field) => {
     ? semanticModel.sections
     : [];
 
-  const sections = aiSections
-    .map((section, index) => {
-const blocks = Array.isArray(section.blocks)
-  ? section.blocks
-      .filter((block) => hasAiBlockContent(block))
-      .map((block) => {
-        const paragraphs = normalizeAiParagraphs(block);
+  let sections = aiSections
+  .map((section, index) => {
+    const blocks = Array.isArray(section.blocks)
+      ? section.blocks
+          .filter((block) => hasAiBlockContent(block))
+          .map((block) => {
+            const paragraphs = normalizeAiParagraphs(block);
 
-        return {
-          type: "text",
-          text: paragraphs.join("\n\n"),
-          paragraphs,
-          sourceHeading: section.heading || "",
-          pageNumbers: block.sourcePage ? [block.sourcePage] : []
-        };
-      })
-  : [];
+            return {
+              type: "text",
+              text: paragraphs.join("\n\n"),
+              paragraphs,
+              sourceHeading: section.heading || "",
+              pageNumbers: block.sourcePage ? [block.sourcePage] : []
+            };
+          })
+      : [];
 
-      return {
-        id: `ai-section-${index + 1}`,
-        order: index + 1,
-        heading: cleanHeading(section.heading || `Section ${index + 1}`),
-        blocks,
-        matchedSourceIds: [],
-        score: 1,
-        pageNumbers: uniqueNumbers(blocks.flatMap((block) => block.pageNumbers || []))
-      };
-    })
-    .filter((section) =>
-      section.heading &&
-      section.blocks.some((block) => block.type === "text" && block.text.trim())
-    );
+    return {
+      id: `ai-section-${index + 1}`,
+      order: index + 1,
+      heading: cleanHeading(section.heading || `Section ${index + 1}`),
+      blocks,
+      matchedSourceIds: [],
+      score: 1,
+      pageNumbers: uniqueNumbers(blocks.flatMap((block) => block.pageNumbers || []))
+    };
+  })
+  .filter((section) =>
+    section.heading &&
+    section.blocks.some((block) => block.type === "text" && block.text.trim())
+  );
 
+const coverageSection = buildCoverageAuditSection(semanticModel, sections.length + 1);
+
+if (coverageSection) {
+  sections.push(coverageSection);
+}
+                                                                                                                    
   return {
     sourceFileName: sourcePdf.fileName,
     title: cleanDocumentTitle(semanticModel?.title || templateContract.title || sourcePdf.fileName),
@@ -528,7 +598,8 @@ const blocks = Array.isArray(section.blocks)
     sourceSectionCount: sections.length,
     factsDetected: summaryRows.filter((row) => row.value && row.value !== fallbackValue).length,
     semanticModel,
-    aiWarnings: Array.isArray(semanticModel?.warnings) ? semanticModel.warnings : []
+   coverageAudit: semanticModel?.coverageAudit || null,
+   aiWarnings: Array.isArray(semanticModel?.warnings) ? semanticModel.warnings : []
   };
 }
 
