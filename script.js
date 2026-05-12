@@ -52,8 +52,8 @@ const els = {
 const state = {
   templateFile: null,
   sourceFiles: [],
-  templateController: null,
-  templateContract: null,
+  templateStyleProfile: null,
+  roughImports: [],
   documents: [],
   auditLog: null
 };
@@ -2228,29 +2228,6 @@ function inferImplicitFacts(fullText, fileName) {
   return facts;
 }
 
-const fileNameEvidence = buildGenericFileNameEvidence(fileTitle);
-
-if (fileNameEvidence.cleanedTitle) {
-  facts.push(
-    makeFact(
-      "File Name Evidence",
-      fileNameEvidence.cleanedTitle,
-      fileTitle,
-      0.25
-    )
-  );
-}
-
-if (fileNameEvidence.possibleYear) {
-  facts.push(
-    makeFact(
-      "Possible Year",
-      fileNameEvidence.possibleYear,
-      fileTitle,
-      0.3
-    )
-  );
-}
 
   function buildGenericFileNameEvidence(fileTitle) {
   const cleanedTitle = cleanHeading(fileTitle || "")
