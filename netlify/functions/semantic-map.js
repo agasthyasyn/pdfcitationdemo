@@ -11,17 +11,9 @@ function extractOpenAIText(data) {
     for (const item of data.output) {
       if (item?.type === "message" && Array.isArray(item.content)) {
         for (const content of item.content) {
-          if (typeof content?.text === "string") {
-            chunks.push(content.text);
-          }
-
-          if (typeof content?.content === "string") {
-            chunks.push(content.content);
-          }
-
-          if (typeof content?.value === "string") {
-            chunks.push(content.value);
-          }
+          if (typeof content?.text === "string") chunks.push(content.text);
+          if (typeof content?.content === "string") chunks.push(content.content);
+          if (typeof content?.value === "string") chunks.push(content.value);
         }
       }
 
@@ -36,134 +28,230 @@ function extractOpenAIText(data) {
   return "";
 }
 
-exports.handler = async function (event) {
-  const headers = {
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Headers": "Content-Type",
-    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-    "Content-Type": "application/json"
+function jsonResponse(statusCode, headers, body) {
+  return {
+    statusCode,
+    headers,
+    body: JSON.stringify(body)
   };
+}
 
-  if (event.httpMethod === "OPTIONS") {
-    return {
-      statusCode: 200,
-      headers,
-      body: JSON.stringify({ ok: true })
-    };
-  }
+function clipText(value, maxChars) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  return text.length > maxChars ? text.slice(0, maxChars) : text;
+}
 
-  if (event.httpMethod === "GET") {
-    return {
-      statusCode: 200,
-      headers,
-      body: JSON.stringify({
-        ok: true,
-        message: "semantic-map function is live",
-        checkedAt: new Date().toISOString(),
-        hasOpenAIKey: Boolean(process.env.OPENAI_API_KEY),
-        visibleOpenAIKeyNames: Object.keys(process.env).filter((key) =>
-          key.toLowerCase().includes("openai")
-        )
-      })
-    };
-  }
+function parseJsonObject(text) {
+  const raw = String(text || "").trim();
 
-  if (event.httpMethod !== "POST") {
-    return {
-      statusCode: 405,
-      headers,
-      body: JSON.stringify({
-        ok: false,
-        error: "Method not allowed"
-      })
-    };
-  }
+  if (!raw) return null;
 
   try {
-    if (!process.env.OPENAI_API_KEY) {
-      return {
-        statusCode: 500,
-        headers,
-        body: JSON.stringify({
-          ok: false,
-          error: "OPENAI_API_KEY is missing in Netlify environment variables."
-        })
-      };
+    return JSON.parse(raw);
+  } catch {
+    // continue
+  }
+
+  const start = raw.indexOf("{");
+  const end = raw.lastIndexOf("}");
+
+  if (start >= 0 && end > start) {
+    try {
+      return JSON.parse(raw.slice(start, end + 1));
+    } catch {
+      return null;
     }
+  }
 
-const payload = JSON.parse(event.body || "{}");
+  return null;
+}
 
-const sourceText = String(payload.sourceText || "").trim();
-const template = payload.template && typeof payload.template === "object" ? payload.template : {};
+function getTemplatePayload(template) {
+  const safeTemplate = template && typeof template === "object" ? template : {};
 
-const headerFields = Array.isArray(template.headerFields)
-  ? template.headerFields
-      .filter((field) => field && field.key && field.label)
-      .map((field) => ({
-        key: String(field.key || "").trim(),
-        label: String(field.label || "").trim()
-      }))
-  : [];
+  const headerFields = Array.isArray(safeTemplate.headerFields)
+    ? safeTemplate.headerFields
+        .filter((field) => field && field.key && field.label)
+        .map((field) => ({
+          key: String(field.key || "").trim(),
+          label: String(field.label || "").trim()
+        }))
+    : [];
 
-const templateSections = Array.isArray(template.sections)
-  ? template.sections
-      .filter((section) => section && section.heading)
-      .map((section) => ({
-        id: String(section.id || "").trim(),
-        heading: String(section.heading || "").trim(),
-        order: Number(section.order || 0)
-      }))
-  : [];
+  const sections = Array.isArray(safeTemplate.sections)
+    ? safeTemplate.sections
+        .filter((section) => section && section.heading)
+        .map((section) => ({
+          id: String(section.id || "").trim(),
+          heading: String(section.heading || "").trim(),
+          order: Number(section.order || 0)
+        }))
+    : [];
 
-if (!sourceText) {
   return {
-    statusCode: 400,
-    headers,
-    body: JSON.stringify({
-      ok: false,
-      error: "sourceText is required. No fallback sample text is allowed."
-    })
+    title: String(safeTemplate.title || "").trim(),
+    headerFields,
+    sections
   };
 }
 
-if (!headerFields.length) {
-  return {
-    statusCode: 400,
-    headers,
-    body: JSON.stringify({
-      ok: false,
-      error: "template.headerFields is required for semantic mapping."
+function buildPagesText(pages) {
+  if (!Array.isArray(pages)) return "";
+
+  return pages
+    .map((page) => {
+      const pageNumber = page?.pageNumber || "";
+      const text = clipText(page?.text || "", 4500);
+      return `PAGE ${pageNumber}\n${text}`;
     })
-  };
+    .filter(Boolean)
+    .join("\n\n");
 }
 
-const response = await fetch("https://api.openai.com/v1/responses", {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        model: "gpt-5.4-mini",
-        store: false,
-        input: [
-          {
-            role: "system",
-            content:
-              "You are a controlled semantic mapper for a document formatting tool. Return valid JSON only. Do not return markdown. Do not wrap JSON in code fences."
-          },
-          {
-            role: "user",
-            content: `
-You are a smart document analyst and formatter for a PDF formatting tool.
+function getMaxOutputTokens(mode) {
+  if (mode === "identity_summary") return 2500;
+  if (mode === "coverage_chunk") return 3500;
+  if (mode === "final_format") return 6000;
+  return 4000;
+}
 
-Your job is to understand the sample/template as a reference for reader-friendly structure, not as a source of facts.
+function buildPrompt(payload) {
+  const mode = payload.mode || "final_format";
+  const fileName = String(payload.fileName || "").trim();
+  const template = getTemplatePayload(payload.template);
+  const sourceIdentity = payload.sourceIdentity || {};
+  const summaryRows = Array.isArray(payload.summaryRows) ? payload.summaryRows : [];
+  const coverageItems = Array.isArray(payload.coverageItems) ? payload.coverageItems : [];
 
-Create a clean, clear, robust, professional document model by understanding the source document and arranging its content into the most suitable summary fields and body sections.
+  if (mode === "identity_summary") {
+    const firstPagesText = clipText(payload.firstPagesText || payload.sourceText || "", 16000);
 
-Return valid JSON only. Do not return markdown. Do not wrap JSON in code fences.
+    return `
+You are the first brain of a document formatting tool.
 
-Required JSON shape:
+Task:
+Identify the source document and fill only the summary/header fields from the source.
+
+Return valid JSON only. No markdown. No code fences.
+
+Required JSON:
+{
+  "title": "",
+  "sourceIdentity": {
+    "documentType": "",
+    "primarySubject": "",
+    "vesselName": "",
+    "portName": "",
+    "country": "",
+    "dateOrPeriod": "",
+    "confidence": 0
+  },
+  "summaryRows": [
+    {
+      "key": "",
+      "label": "",
+      "value": "",
+      "confidence": 0,
+      "evidence": "",
+      "sourcePage": null
+    }
+  ],
+  "warnings": []
+}
+
+Template title:
+${template.title}
+
+Template header fields:
+${JSON.stringify(template.headerFields, null, 2)}
+
+Rules:
+- The source document is the factual authority.
+- The template fields are targets for allocation, not facts.
+- Return exactly one summaryRows item for every template header field.
+- Use exact key and exact label from the template field.
+- Map by meaning, not only keyword matching.
+- Do not place body sentences, warnings, phone fragments, unrelated numbers, or operational paragraphs into summary fields.
+- If a field is genuinely missing, use "Not Available".
+- Evidence must come from the supplied source text.
+- Keep this response compact.
+
+File name:
+${fileName}
+
+Source text:
+${firstPagesText}
+`;
+  }
+
+  if (mode === "coverage_chunk") {
+    const pagesText = buildPagesText(payload.pages);
+    const chunkId = String(payload.chunkId || "").trim();
+
+    return `
+You are the second brain of a document formatting tool.
+
+Task:
+Read this source chunk and extract reader-critical details that must not be lost during formatting.
+
+Return valid JSON only. No markdown. No code fences.
+
+Required JSON:
+{
+  "chunkId": "",
+  "pageNumbers": [],
+  "coverageItems": [
+    {
+      "theme": "",
+      "detail": "",
+      "importance": "high",
+      "sourcePage": null,
+      "evidence": ""
+    }
+  ],
+  "warnings": []
+}
+
+Source identity:
+${JSON.stringify(sourceIdentity, null, 2)}
+
+Rules:
+- Extract operationally important details, not decorative text.
+- Preserve instructions, warnings, restrictions, dates, contacts, limits, rates, quantities, operational steps, exceptions, services, responsibilities, safety/security notes, and compliance notes.
+- Keep each coverage item as one clear detail.
+- Do not rewrite into long paragraphs.
+- Do not invent missing details.
+- If a table is present but broken, extract the important facts visible in the text.
+- If the chunk has visual/chart/photo context mentioned in text, capture the useful context as a coverage item.
+- Maximum 25 coverageItems for this chunk.
+- Avoid duplicates inside this chunk.
+
+File name:
+${fileName}
+
+Chunk ID:
+${chunkId}
+
+Source chunk:
+${pagesText}
+`;
+  }
+
+  const limitedCoverageItems = coverageItems.slice(0, 120);
+
+  return `
+You are the final formatting brain for a document formatting tool.
+
+Task:
+Create a clean, clear, professional document model using:
+1. the template as a reader-friendly reference,
+2. the source identity and summary rows as factual anchors,
+3. the coverage items as mandatory details that must not be lost.
+
+Return valid JSON only. No markdown. No code fences.
+
+Required JSON:
 {
   "title": "",
   "summaryRows": [
@@ -176,7 +264,7 @@ Required JSON shape:
       "sourcePage": null
     }
   ],
-    "sections": [
+  "sections": [
     {
       "heading": "",
       "blocks": [
@@ -200,101 +288,123 @@ Required JSON shape:
   "warnings": []
 }
 
+Template title:
+${template.title}
+
 Template header fields:
-${JSON.stringify(headerFields, null, 2)}
+${JSON.stringify(template.headerFields, null, 2)}
 
 Template sections:
-${JSON.stringify(templateSections, null, 2)}
+${JSON.stringify(template.sections, null, 2)}
 
-Core interpretation rules:
-- The sample/template is a reference for structure, layout logic, and reader experience.
-- The sample/template is not the factual source.
-- The source document is the only factual authority.
-- Do not copy sample-specific names, ports, countries, companies, vessels, locations, or headings unless they are also present in the source document.
-- Do not strictly mimic the sample wording.
-- Use the sample to understand what kind of information belongs where.
-- Use the source to decide what the actual values and body content should be.
+Source identity:
+${JSON.stringify(sourceIdentity, null, 2)}
 
-Coverage-first rules:
-- The template must not decide which source details are removed.
-- The source document controls content coverage.
-- Before formatting, identify all reader-critical details from the source.
-- Reader-critical details include instructions, warnings, restrictions, dates, contacts, limits, rates, quantities, operational steps, exceptions, services, responsibilities, and safety/security notes.
-- Preserve reader-critical details even when they do not fit neatly into the sample/template sections.
-- If important source details do not fit cleanly into the main sections, place them under "Additional Operational Notes".
-- Do not compress multiple important instructions into one vague sentence.
-- Do not omit a source detail only because it appears minor or does not match a template heading.
-- Do not convert the document into only a brief summary unless the source itself is brief.
+Pre-extracted summary rows:
+${JSON.stringify(summaryRows, null, 2)}
 
-Smart field allocation rules:
-- Read each template header field as a meaning-based target, not just a keyword.
-- Use your understanding to decide what value belongs in each field.
-- A country field should contain a country-like value.
-- A port, city, or location field should contain a place/location-like value.
-- A vessel, customer, vendor, project, or event name field should contain the appropriate name-like value.
-- A date or stay field should contain a date or date range.
-- A contact field should contain a person, company, phone, email, or contact details.
-- A communication field should contain communication details such as channels, radio, phone, email, or equivalent source context.
-- A depth, draft, quantity, rate, estimate, amount, or measurement field should preserve numbers and units accurately.
-- If the source wording differs from the template label, map by meaning.
-- If a value is genuinely missing, use "Not Available".
+Mandatory coverage items:
+${JSON.stringify(limitedCoverageItems, null, 2)}
 
-Summary table rules:
-- If the template contains summary/header rows, return exactly one summaryRows item for every Template header field.
-- Use the exact key from the Template header field.
-- Use the exact label from the Template header field.
-- Do not rename labels.
-- Do not create extra summary labels.
-- Do not leave a field as Not Available if a clear equivalent exists in the source.
-- Do not place body sentences, warnings, phone fragments, unrelated numbers, or operational remarks into summary fields.
-- Evidence must support the extracted value and must come from the supplied source text.
-
-Body section rules:
-- Use the template sections as a reference for how a reader expects the document to be organized.
-- Do not blindly reproduce template section names if they do not fit the source.
-- Create clean section headings that are appropriate for the source document.
-- Place each source detail under the most suitable section.
-- Remove exact duplication, but do not remove distinct operational details.
-- Avoid creating too many tiny sections, but do not merge unrelated critical details into one vague paragraph.
-- If a detail is important but does not fit the main sections, preserve it under "Additional Operational Notes".
-- Do not include system notes, template references, original source notes, generated output notes, or audit notes.
-
-Paragraph formatting rules:
-- Every body block must be cleanly paragraph-based.
-- Use the "paragraphs" array for paragraph-level content.
-- Each paragraph must be a complete, readable paragraph.
+Rules:
+- The template is only a reference for structure and readability.
+- The source identity, summary rows, and coverage items are the factual authority.
+- Do not copy sample/template-specific facts unless they are present in the source identity or coverage items.
+- Return exactly one summaryRows item for every template header field.
+- Prefer the pre-extracted summaryRows when they are valid.
+- Build clean body sections from the mandatory coverage items.
+- Do not drop high-importance coverage items.
+- If a coverage item does not fit neatly into the main sections, preserve it under coverageAudit.additionalOperationalNotes.
+- Use paragraph arrays for every text block.
+- Each paragraph must be readable, complete, and focused.
 - Do not create one long wall of text.
-- Do not put unrelated topics into the same paragraph.
-- Fix broken PDF line breaks.
-- Restore basic punctuation where the extracted text is clearly broken.
-- Keep operational meaning unchanged.
-- Preserve names, dates, coordinates, quantities, contact details, rates, measurements, and units accurately.
-- Prefer clear reader-friendly paragraphs over raw extracted lines.
-- The "content" field may contain the same paragraphs joined with double line breaks.
+- Do not over-compress operational restrictions or instructions.
+- Avoid exact duplication.
+- Maximum 10 sections.
+- Maximum 5 paragraphs per section.
+- Keep the final model useful, not bloated.
 
-Table and visual awareness rules:
-- If the source appears to contain a table but the text extraction is too broken, summarize the table carefully without inventing missing cells.
-- If the content is clearly a visual/chart/photo reference, do not force it into random body text.
-- Mention useful visual context only when it helps the reader understand the document.
+File name:
+${fileName}
+`;
+}
 
-Quality rules:
-- Be accurate before being polished.
-- Be clear before being short.
-- Do not hallucinate.
-- Do not over-polish warnings or restrictions in a way that changes meaning.
-- If unsure, use "Not Available" or add a warning.
+exports.handler = async function (event) {
+  const headers = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Headers": "Content-Type",
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+    "Content-Type": "application/json"
+  };
 
-Coverage audit rules:
-- Fill coverageAudit.importantSourceThemesCovered with the main source themes you preserved.
-- Fill coverageAudit.additionalOperationalNotes with important source details that do not fit neatly into the main sections.
-- Fill coverageAudit.unmappedImportantDetails with important details that were hard to place.
-- Fill coverageAudit.possibleOmissions only if the supplied text appears incomplete, too noisy, or unclear.
-- coverageAudit.coverageConfidence must be between 0 and 1.
-- If the source contains vessel-facing, operational, safety, restriction, documentation, contact, rate, quantity, or timing details, do not silently drop them.
+  if (event.httpMethod === "OPTIONS") {
+    return jsonResponse(200, headers, { ok: true });
+  }
 
-Source text:
-${sourceText}
-`
+  if (event.httpMethod === "GET") {
+    return jsonResponse(200, headers, {
+      ok: true,
+      message: "semantic-map function is live",
+      checkedAt: new Date().toISOString(),
+      hasOpenAIKey: Boolean(process.env.OPENAI_API_KEY),
+      modes: ["identity_summary", "coverage_chunk", "final_format"]
+    });
+  }
+
+  if (event.httpMethod !== "POST") {
+    return jsonResponse(405, headers, {
+      ok: false,
+      error: "Method not allowed"
+    });
+  }
+
+  try {
+    if (!process.env.OPENAI_API_KEY) {
+      return jsonResponse(500, headers, {
+        ok: false,
+        error: "OPENAI_API_KEY is missing in Netlify environment variables."
+      });
+    }
+
+    const payload = JSON.parse(event.body || "{}");
+    const mode = payload.mode || "final_format";
+    const template = getTemplatePayload(payload.template);
+
+    if (!["identity_summary", "coverage_chunk", "final_format"].includes(mode)) {
+      return jsonResponse(400, headers, {
+        ok: false,
+        error: `Unsupported semantic-map mode: ${mode}`
+      });
+    }
+
+    if ((mode === "identity_summary" || mode === "final_format") && !template.headerFields.length) {
+      return jsonResponse(400, headers, {
+        ok: false,
+        error: "template.headerFields is required."
+      });
+    }
+
+    const prompt = buildPrompt(payload);
+
+    const response = await fetch("https://api.openai.com/v1/responses", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: "gpt-5.4-mini",
+        store: false,
+        max_output_tokens: getMaxOutputTokens(mode),
+        input: [
+          {
+            role: "system",
+            content:
+              "You are a controlled JSON document-brain service. Return valid JSON only. Do not return markdown or code fences."
+          },
+          {
+            role: "user",
+            content: prompt
           }
         ]
       })
@@ -303,43 +413,35 @@ ${sourceText}
     const data = await response.json();
 
     if (!response.ok) {
-      return {
-        statusCode: response.status,
-        headers,
-        body: JSON.stringify({
-          ok: false,
-          error: data
-        })
-      };
+      return jsonResponse(response.status, headers, {
+        ok: false,
+        mode,
+        error: data
+      });
     }
 
     const outputText = extractOpenAIText(data);
+    const parsedJson = parseJsonObject(outputText);
 
-    let parsedJson = null;
-    try {
-      parsedJson = JSON.parse(outputText);
-    } catch {
-      parsedJson = null;
+    if (!parsedJson || typeof parsedJson !== "object") {
+      return jsonResponse(502, headers, {
+        ok: false,
+        mode,
+        error: "OpenAI returned output that could not be parsed as JSON.",
+        outputPreview: outputText.slice(0, 1000)
+      });
     }
 
-    return {
-      statusCode: 200,
-      headers,
-      body: JSON.stringify({
-        ok: true,
-        outputText,
-        parsedJson,
-        raw: data
-      })
-    };
+    return jsonResponse(200, headers, {
+      ok: true,
+      mode,
+      parsedJson,
+      outputText
+    });
   } catch (error) {
-    return {
-      statusCode: 500,
-      headers,
-      body: JSON.stringify({
-        ok: false,
-        error: error.message
-      })
-    };
+    return jsonResponse(500, headers, {
+      ok: false,
+      error: error.message
+    });
   }
 };
