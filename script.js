@@ -539,6 +539,7 @@ finalModel.coverageAudit.sourceCoverageMode = "second_brain_chunked";
 console.log("Second brain: final formatting completed", finalModel);
 
 return finalModel;
+}
 
 function isUsableSemanticModel(semanticModel) {
   if (!semanticModel || typeof semanticModel !== "object") return false;
