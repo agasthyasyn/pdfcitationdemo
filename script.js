@@ -380,6 +380,42 @@ function isUsableSemanticModel(semanticModel) {
   return hasAnySummaryValue || hasAnySectionContent;
 }
 
+function hasAiBlockContent(block) {
+  if (!block) return false;
+
+  if (Array.isArray(block.paragraphs) && block.paragraphs.some((item) => normalizeLine(item || ""))) {
+    return true;
+  }
+
+  return Boolean(normalizeLine(block.text || block.content || ""));
+}
+
+function normalizeAiParagraphs(block) {
+  if (!block) return [];
+
+  if (Array.isArray(block.paragraphs)) {
+    return block.paragraphs
+      .map((item) => cleanBusinessContent(item || ""))
+      .map((item) => normalizeLine(item))
+      .filter(Boolean);
+  }
+
+  const raw = cleanBusinessContent(block.text || block.content || "");
+
+  return raw
+    .split(/\n{2,}|(?:\.\s+)(?=[A-Z][a-z])/g)
+    .map((item) => normalizeLine(item))
+    .filter(Boolean)
+    .map((item) => {
+      if (/[.!?:;]$/.test(item)) return item;
+      return `${item}.`;
+    });
+}
+
+function paragraphTextFromAiBlock(block) {
+  return normalizeAiParagraphs(block).join("\n\n");
+}
+
 function buildDocumentModelFromSemanticModel({ semanticModel, sourcePdf, templateContract, sourceProfile = null }) {  const fallbackValue = getFallbackValue();
   const aiSummaryRows = Array.isArray(semanticModel?.summaryRows)
     ? semanticModel.summaryRows
@@ -451,16 +487,21 @@ const summaryRows = (templateContract.headerFields || []).map((field) => {
 
   const sections = aiSections
     .map((section, index) => {
-      const blocks = Array.isArray(section.blocks)
-        ? section.blocks
-            .filter((block) => block && (block.text || block.content))
-            .map((block) => ({
-              type: "text",
-              text: cleanBusinessContent(block.text || block.content || ""),
-              sourceHeading: section.heading || "",
-              pageNumbers: block.sourcePage ? [block.sourcePage] : []
-            }))
-        : [];
+const blocks = Array.isArray(section.blocks)
+  ? section.blocks
+      .filter((block) => hasAiBlockContent(block))
+      .map((block) => {
+        const paragraphs = normalizeAiParagraphs(block);
+
+        return {
+          type: "text",
+          text: paragraphs.join("\n\n"),
+          paragraphs,
+          sourceHeading: section.heading || "",
+          pageNumbers: block.sourcePage ? [block.sourcePage] : []
+        };
+      })
+  : [];
 
       return {
         id: `ai-section-${index + 1}`,
