@@ -111,8 +111,9 @@ function buildPagesText(pages) {
 
 function getMaxOutputTokens(mode) {
   if (mode === "identity_summary") return 2500;
-  if (mode === "coverage_chunk") return 3500;
-  if (mode === "final_format") return 6000;
+  if (mode === "vision_page") return 3500;
+  if (mode === "coverage_chunk") return 4000;
+  if (mode === "final_format") return 6500;
   return 4000;
 }
 
@@ -123,7 +124,7 @@ function buildPrompt(payload) {
   const sourceIdentity = payload.sourceIdentity || {};
   const summaryRows = Array.isArray(payload.summaryRows) ? payload.summaryRows : [];
   const coverageItems = Array.isArray(payload.coverageItems) ? payload.coverageItems : [];
-
+  const visionPages = Array.isArray(payload.visionPages) ? payload.visionPages : [];
   if (mode === "identity_summary") {
     const firstPagesText = clipText(payload.firstPagesText || payload.sourceText || "", 16000);
 
@@ -185,6 +186,96 @@ ${firstPagesText}
 `;
   }
 
+if (mode === "vision_page") {
+  const page = payload.page && typeof payload.page === "object" ? payload.page : {};
+  const pageNumber = page.pageNumber || null;
+  const extractedText = clipText(page.extractedText || "", 5000);
+
+  return `
+You are the vision extraction brain for a document formatting tool.
+
+Task:
+Read the full page image and the available PDF text extraction. Recover useful text, tables, lists, visual meaning, and page layout that may be missing or corrupted in normal PDF text extraction.
+
+Return valid JSON only. No markdown. No code fences.
+
+Required JSON:
+{
+  "pageNumber": null,
+  "pageRole": "",
+  "textBlocks": [
+    {
+      "type": "heading",
+      "text": "",
+      "position": "top",
+      "importance": "high"
+    }
+  ],
+  "lists": [
+    {
+      "heading": "",
+      "items": [],
+      "position": "middle",
+      "importance": "medium"
+    }
+  ],
+  "tables": [
+    {
+      "heading": "",
+      "headers": [],
+      "rows": [],
+      "position": "middle",
+      "importance": "high"
+    }
+  ],
+  "visualBlocks": [
+    {
+      "kind": "photo",
+      "description": "",
+      "caption": "",
+      "position": "middle",
+      "importance": "medium"
+    }
+  ],
+  "coverageItems": [
+    {
+      "theme": "",
+      "detail": "",
+      "importance": "high",
+      "sourcePage": null,
+      "evidence": ""
+    }
+  ],
+  "warnings": []
+}
+
+Source identity:
+${JSON.stringify(sourceIdentity, null, 2)}
+
+Rules:
+- Use the image as the primary source when PDF text extraction is broken.
+- Use extracted PDF text only as support.
+- Recover visible headings, labels, values, table rows, list items, contact details, measurements, warnings, dates, rates, quantities, and restrictions.
+- Preserve table structure where visible.
+- Preserve list structure where visible.
+- Identify meaningful photos, charts, screenshots, maps, and diagrams as visualBlocks.
+- Do not invent hidden text.
+- Do not over-read unreadable blurry text.
+- If a value is unreadable, say "Unreadable" in warnings, not as a fact.
+- Page position must be one of: top, upper, middle, lower, bottom, full_page.
+- Keep output compact.
+
+File name:
+${fileName}
+
+Page number:
+${pageNumber}
+
+PDF extracted text for this page:
+${extractedText}
+`;
+}
+
   if (mode === "coverage_chunk") {
     const pagesText = buildPagesText(payload.pages);
     const chunkId = String(payload.chunkId || "").trim();
@@ -215,6 +306,9 @@ Required JSON:
 
 Source identity:
 ${JSON.stringify(sourceIdentity, null, 2)}
+
+Vision extraction for these pages:
+${JSON.stringify(visionPages, null, 2)}
 
 Rules:
 - Extract operationally important details, not decorative text.
@@ -306,6 +400,9 @@ ${JSON.stringify(summaryRows, null, 2)}
 Mandatory coverage items:
 ${JSON.stringify(limitedCoverageItems, null, 2)}
 
+Vision page intelligence:
+${JSON.stringify(visionPages.slice(0, 20), null, 2)}
+
 Rules:
 - The template is only a reference for structure and readability.
 - The source identity, summary rows, and coverage items are the factual authority.
@@ -327,6 +424,47 @@ Rules:
 File name:
 ${fileName}
 `;
+}
+
+function buildOpenAIInput(payload, prompt) {
+  const mode = payload.mode || "final_format";
+
+  if (mode === "vision_page") {
+    const imageDataUrl = payload?.page?.imageDataUrl || "";
+
+    return [
+      {
+        role: "system",
+        content:
+          "You are a controlled JSON document-brain service. Return valid JSON only. Do not return markdown or code fences."
+      },
+      {
+        role: "user",
+        content: [
+          {
+            type: "input_text",
+            text: prompt
+          },
+          {
+            type: "input_image",
+            image_url: imageDataUrl
+          }
+        ]
+      }
+    ];
+  }
+
+  return [
+    {
+      role: "system",
+      content:
+        "You are a controlled JSON document-brain service. Return valid JSON only. Do not return markdown or code fences."
+    },
+    {
+      role: "user",
+      content: prompt
+    }
+  ];
 }
 
 exports.handler = async function (event) {
@@ -370,7 +508,7 @@ exports.handler = async function (event) {
     const mode = payload.mode || "final_format";
     const template = getTemplatePayload(payload.template);
 
-    if (!["identity_summary", "coverage_chunk", "final_format"].includes(mode)) {
+    if (!["identity_summary", "vision_page", "coverage_chunk", "final_format"].includes(mode)) {
       return jsonResponse(400, headers, {
         ok: false,
         error: `Unsupported semantic-map mode: ${mode}`
@@ -396,17 +534,7 @@ exports.handler = async function (event) {
         model: "gpt-5.4-mini",
         store: false,
         max_output_tokens: getMaxOutputTokens(mode),
-        input: [
-          {
-            role: "system",
-            content:
-              "You are a controlled JSON document-brain service. Return valid JSON only. Do not return markdown or code fences."
-          },
-          {
-            role: "user",
-            content: prompt
-          }
-        ]
+        input: buildOpenAIInput(payload, prompt)
       })
     });
 
