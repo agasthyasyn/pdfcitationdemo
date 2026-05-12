@@ -176,7 +176,7 @@ Required JSON shape:
       "sourcePage": null
     }
   ],
-  "sections": [
+    "sections": [
     {
       "heading": "",
       "blocks": [
@@ -189,6 +189,14 @@ Required JSON shape:
       ]
     }
   ],
+  "coverageAudit": {
+    "sourceCoverageMode": "coverage_first",
+    "importantSourceThemesCovered": [],
+    "additionalOperationalNotes": [],
+    "unmappedImportantDetails": [],
+    "possibleOmissions": [],
+    "coverageConfidence": 0
+  },
   "warnings": []
 }
 
@@ -206,6 +214,17 @@ Core interpretation rules:
 - Do not strictly mimic the sample wording.
 - Use the sample to understand what kind of information belongs where.
 - Use the source to decide what the actual values and body content should be.
+
+Coverage-first rules:
+- The template must not decide which source details are removed.
+- The source document controls content coverage.
+- Before formatting, identify all reader-critical details from the source.
+- Reader-critical details include instructions, warnings, restrictions, dates, contacts, limits, rates, quantities, operational steps, exceptions, services, responsibilities, and safety/security notes.
+- Preserve reader-critical details even when they do not fit neatly into the sample/template sections.
+- If important source details do not fit cleanly into the main sections, place them under "Additional Operational Notes".
+- Do not compress multiple important instructions into one vague sentence.
+- Do not omit a source detail only because it appears minor or does not match a template heading.
+- Do not convert the document into only a brief summary unless the source itself is brief.
 
 Smart field allocation rules:
 - Read each template header field as a meaning-based target, not just a keyword.
@@ -235,8 +254,9 @@ Body section rules:
 - Do not blindly reproduce template section names if they do not fit the source.
 - Create clean section headings that are appropriate for the source document.
 - Place each source detail under the most suitable section.
-- Remove duplication across sections.
-- Avoid creating too many tiny sections.
+- Remove exact duplication, but do not remove distinct operational details.
+- Avoid creating too many tiny sections, but do not merge unrelated critical details into one vague paragraph.
+- If a detail is important but does not fit the main sections, preserve it under "Additional Operational Notes".
 - Do not include system notes, template references, original source notes, generated output notes, or audit notes.
 
 Paragraph formatting rules:
@@ -263,6 +283,14 @@ Quality rules:
 - Do not hallucinate.
 - Do not over-polish warnings or restrictions in a way that changes meaning.
 - If unsure, use "Not Available" or add a warning.
+
+Coverage audit rules:
+- Fill coverageAudit.importantSourceThemesCovered with the main source themes you preserved.
+- Fill coverageAudit.additionalOperationalNotes with important source details that do not fit neatly into the main sections.
+- Fill coverageAudit.unmappedImportantDetails with important details that were hard to place.
+- Fill coverageAudit.possibleOmissions only if the supplied text appears incomplete, too noisy, or unclear.
+- coverageAudit.coverageConfidence must be between 0 and 1.
+- If the source contains vessel-facing, operational, safety, restriction, documentation, contact, rate, quantity, or timing details, do not silently drop them.
 
 Source text:
 ${sourceText}
