@@ -422,39 +422,20 @@ ${JSON.stringify(visionPages.slice(0, 20), null, 2)}
 
 Rules:
 - The template is only a reference for structure and readability.
-- The source identity, summary rows, and coverage items are the factual authority.
-- Do not copy sample/template-specific facts unless they are present in the source identity or coverage items.
+- The source identity, summary rows, coverage items, and compact vision intelligence are the factual authority.
+- Do not copy sample/template-specific facts unless they are present in the source identity, summary rows, coverage items, or vision intelligence.
 - Return exactly one summaryRows item for every template header field.
 - Prefer the pre-extracted summaryRows when they are valid.
-- Build clean body sections from the mandatory coverage items.
+- Build clean body sections from the mandatory coverage items and vision intelligence.
 - Do not drop high-importance coverage items.
 - If a coverage item does not fit neatly into the main sections, preserve it under coverageAudit.additionalOperationalNotes.
+- Use enough sections to preserve important source information, but avoid duplicate or meaningless sections.
 - Use paragraph arrays for every text block.
 - Each paragraph must be readable, complete, and focused.
 - Do not create one long wall of text.
-- Do not over-compress operational restrictions or instructions.
+- Do not over-compress operational restrictions, warnings, document requirements, contacts, measurements, dates, rates, or instructions.
 - Avoid exact duplication.
-- Maximum 10 sections.
-- Maximum 5 paragraphs per section.
-- Keep the final model useful, not bloated.
-
-Rules:
-- The template is only a reference for structure and readability.
-- The source identity, summary rows, and coverage items are the factual authority.
-- Do not copy sample/template-specific facts unless they are present in the source identity or coverage items.
-- Return exactly one summaryRows item for every template header field.
-- Prefer the pre-extracted summaryRows when they are valid.
-- Build clean body sections from the mandatory coverage items.
-- Do not drop high-importance coverage items.
-- If a coverage item does not fit neatly into the main sections, preserve it under coverageAudit.additionalOperationalNotes.
-- Use paragraph arrays for every text block.
-- Each paragraph must be readable, complete, and focused.
-- Do not create one long wall of text.
-- Do not over-compress operational restrictions or instructions.
-- Avoid exact duplication.
-- Create required number of sections to retrieve and format every information from the source.
-- Create requried number of paragraphs that is useful for the documentation formatting process.
-- Keep the final model useful, not bloated.
+- Keep the final model useful, structured, and source-faithful.
 
 HTML/document structure rules:
 - Treat every section as a future <section> block.
