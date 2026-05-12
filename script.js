@@ -462,6 +462,68 @@ function dedupeCoverageItems(items) {
     .slice(0, 120);
 }
 
+function buildVisionPagePayload(page) {
+  return {
+    pageNumber: page.pageNumber,
+    extractedText: page.text || "",
+    imageDataUrl: page.pageImage?.imageDataUrl || "",
+    width: page.pageImage?.width || 0,
+    height: page.pageImage?.height || 0
+  };
+}
+
+async function runVisionBrain({ fileName, sourcePdf, sourceIdentity }) {
+  const pages = Array.isArray(sourcePdf.pages) ? sourcePdf.pages : [];
+  const results = [];
+
+  for (const page of pages) {
+    if (!page.pageImage?.imageDataUrl) continue;
+
+    console.log("Vision brain: page started", {
+      fileName,
+      pageNumber: page.pageNumber
+    });
+
+    const visionModel = await callSemanticMapper({
+      mode: "vision_page",
+      fileName,
+      sourceIdentity,
+      page: buildVisionPagePayload(page)
+    });
+
+    results.push({
+      ...visionModel,
+      pageNumber: page.pageNumber,
+      pageImage: page.pageImage
+    });
+
+    console.log("Vision brain: page completed", {
+      fileName,
+      pageNumber: page.pageNumber,
+      textBlocks: Array.isArray(visionModel.textBlocks) ? visionModel.textBlocks.length : 0,
+      visualBlocks: Array.isArray(visionModel.visualBlocks) ? visionModel.visualBlocks.length : 0,
+      tables: Array.isArray(visionModel.tables) ? visionModel.tables.length : 0
+    });
+  }
+
+  return results;
+}
+
+function visionItemsForChunk(visionPages, pageNumbers) {
+  const allowed = new Set(pageNumbers || []);
+
+  return (visionPages || [])
+    .filter((page) => allowed.has(page.pageNumber))
+    .map((page) => ({
+      pageNumber: page.pageNumber,
+      pageRole: page.pageRole || "",
+      textBlocks: Array.isArray(page.textBlocks) ? page.textBlocks : [],
+      visualBlocks: Array.isArray(page.visualBlocks) ? page.visualBlocks : [],
+      tables: Array.isArray(page.tables) ? page.tables : [],
+      lists: Array.isArray(page.lists) ? page.lists : []
+    }));
+}
+
 async function runSecondBrain({ fileName, sourcePdf, templateContract }) {
   const template = buildTemplatePayload(templateContract);
 
@@ -476,9 +538,16 @@ async function runSecondBrain({ fileName, sourcePdf, templateContract }) {
 
   console.log("Second brain: identity + summary completed", identityModel);
 
-  const sourceIdentity = identityModel.sourceIdentity || {};
-  const chunks = buildBrainPageChunks(sourcePdf, 4, 18000);
-  const coverageModels = [];
+const sourceIdentity = identityModel.sourceIdentity || {};
+
+const visionPages = await runVisionBrain({
+  fileName,
+  sourcePdf,
+  sourceIdentity
+});
+
+const chunks = buildBrainPageChunks(sourcePdf, 4, 18000);
+const coverageModels = [];
 
   for (const chunk of chunks) {
     console.log("Second brain: coverage chunk started", {
@@ -487,13 +556,14 @@ async function runSecondBrain({ fileName, sourcePdf, templateContract }) {
       pageNumbers: chunk.pageNumbers
     });
 
-    const chunkModel = await callSemanticMapper({
-      mode: "coverage_chunk",
-      fileName,
-      sourceIdentity,
-      chunkId: chunk.chunkId,
-      pages: chunk.pages
-    });
+const chunkModel = await callSemanticMapper({
+  mode: "coverage_chunk",
+  fileName,
+  sourceIdentity,
+  chunkId: chunk.chunkId,
+  pages: chunk.pages,
+  visionPages: visionItemsForChunk(visionPages, chunk.pageNumbers)
+});
 
     coverageModels.push(chunkModel);
 
@@ -515,14 +585,15 @@ async function runSecondBrain({ fileName, sourcePdf, templateContract }) {
     coverageItemCount: coverageItems.length
   });
 
-  const finalModel = await callSemanticMapper({
-    mode: "final_format",
-    fileName,
-    template,
-    sourceIdentity,
-    summaryRows: Array.isArray(identityModel.summaryRows) ? identityModel.summaryRows : [],
-    coverageItems
-  });
+const finalModel = await callSemanticMapper({
+  mode: "final_format",
+  fileName,
+  template,
+  sourceIdentity,
+  summaryRows: Array.isArray(identityModel.summaryRows) ? identityModel.summaryRows : [],
+  coverageItems,
+  visionPages
+});
 
 finalModel.sourceIdentity = sourceIdentity;
 finalModel.firstBrainTitle = identityModel.title || "";
@@ -530,6 +601,7 @@ finalModel.firstBrainSummaryRows = Array.isArray(identityModel.summaryRows)
   ? identityModel.summaryRows
   : [];
 finalModel.extractedCoverageItems = coverageItems;
+finalModel.visionPages = visionPages;  
 finalModel.templateTitle = template.title || "";
 
 finalModel.coverageAudit = finalModel.coverageAudit || {};
@@ -921,8 +993,11 @@ for (let i = 0; i < state.sourceFiles.length; i++) {
   const file = state.sourceFiles[i];
   setStatus(`Processing ${file.name} (${i + 1} of ${state.sourceFiles.length})...`);
 
-  const sourcePdf = await extractPdf(file, { collectVisuals: isVisualCaptureEnabled() });
-
+const sourcePdf = await extractPdf(file, {
+  collectVisuals: isVisualCaptureEnabled(),
+  collectPageImages: true
+});
+  
   setStatus(`Running AI semantic mapping for ${file.name}...`);
 
   let semanticModel = null;
@@ -994,6 +1069,7 @@ setStatus("Processing complete. Review the preview before exporting.", "success"
 
 async function extractPdf(file, options = {}) {
   const collectVisuals = options.collectVisuals ?? false;
+  const collectPageImages = options.collectPageImages ?? false;
 
   const buffer = await file.arrayBuffer();
   const pdf = await pdfjsLib.getDocument({
@@ -1018,18 +1094,33 @@ async function extractPdf(file, options = {}) {
     const lines = buildLines(items, viewport);
     const pageText = lines.map((line) => line.text).join("\n");
 
-    let renderedPage = null;
-    let visualCandidates = [];
+let renderedPage = null;
+let pageImage = null;
+let visualCandidates = [];
 
-    if (collectVisuals && boolRule(getDetectionRules().detectVisuals, false)) {
-      renderedPage = await renderPageToDataUrl(page, CONFIG.extraction.renderScale);
-      visualCandidates = detectVisualCandidates({
-        pageNumber,
-        viewport,
-        lines,
-        renderedPage
-      });
-    }
+if (collectPageImages || (collectVisuals && boolRule(getDetectionRules().detectVisuals, false))) {
+  renderedPage = await renderPageToDataUrl(page, 1.25, "image/jpeg", 0.72);
+}
+
+if (collectPageImages && renderedPage) {
+  pageImage = {
+    pageNumber,
+    imageDataUrl: renderedPage.dataUrl,
+    width: renderedPage.width,
+    height: renderedPage.height,
+    scale: renderedPage.scale,
+    mimeType: renderedPage.mimeType || "image/jpeg"
+  };
+}
+
+if (collectVisuals && boolRule(getDetectionRules().detectVisuals, false) && renderedPage) {
+  visualCandidates = detectVisualCandidates({
+    pageNumber,
+    viewport,
+    lines,
+    renderedPage
+  });
+}
 
     pages.push({
       pageNumber,
@@ -1039,6 +1130,7 @@ async function extractPdf(file, options = {}) {
       lines,
       text: cleanExtractedText(pageText),
       renderedPage,
+      pageImage,
       visualCandidates
     });
   }
@@ -1152,7 +1244,7 @@ function joinLineItems(items) {
   return result.replace(/\s+/g, " ").trim();
 }
 
-async function renderPageToDataUrl(page, scale) {
+async function renderPageToDataUrl(page, scale, mimeType = "image/png", quality = 0.95) {
   const viewport = page.getViewport({ scale });
   const canvas = document.createElement("canvas");
   const context = canvas.getContext("2d", { alpha: false });
@@ -1163,10 +1255,11 @@ async function renderPageToDataUrl(page, scale) {
   await page.render({ canvasContext: context, viewport }).promise;
 
   return {
-    dataUrl: canvas.toDataURL("image/png", 0.95),
+    dataUrl: canvas.toDataURL(mimeType, quality),
     width: canvas.width,
     height: canvas.height,
-    scale
+    scale,
+    mimeType
   };
 }
 
