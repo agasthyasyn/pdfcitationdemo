@@ -1,5 +1,4 @@
 import * as pdfjsLib from "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.4.168/pdf.min.mjs";
-import { loadTemplateController } from "./schema.controller.js";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc =
   "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.4.168/pdf.worker.min.mjs";
@@ -18,11 +17,6 @@ const { PDFDocument, StandardFonts, rgb } = window.PDFLib;
    5. Aligns source content into the sample structure.
    6. Marks missing values as "Not Available" or Firebase fallback value.
    7. Avoids hardcoded fallback sections.
-   8. Uses Firebase visual rules for conservative image/crop handling.
-
-   Required companion files:
-   - firebase.client.js
-   - schema.controller.js
 
    Required HTML IDs:
    - templatePdfInput
@@ -69,17 +63,23 @@ const CONFIG = {
     lineYTolerance: 3.5,
     wordGapMultiplier: 0.55,
     renderScale: 1.6,
-    maxVisualsPerDocument: 8
+    pageImageScale: 1.25,
+    pageImageMimeType: "image/jpeg",
+    pageImageQuality: 0.72
   },
-  mapping: {
-    minSectionScore: 0.18,
-    minFieldScore: 0.42
-  },
+
   structure: {
     minHeadingLength: 3,
     maxHeadingLength: 120,
     maxTemplateSections: 50
   },
+
+  visuals: {
+    rejectIfTextDensityAbovePercent: 18,
+    rejectTextHeavyCrops: true,
+    minVisualHeight: 95
+  },
+
   output: {
     pageWidth: 595.28,
     pageHeight: 841.89,
@@ -93,6 +93,7 @@ const CONFIG = {
     figureMaxHeight: 210,
     tableRowHeight: 25
   },
+
   labelsToRemove: [
     "formatted document",
     "template based standardized document",
@@ -108,89 +109,12 @@ const CONFIG = {
     "unmapped additional source content",
     "additional source content",
     "system note",
-    "audit note"
+    "audit note",
+    "rough import",
+    "source import"
   ]
 };
 
-const COMMON_HEADER_LABELS = [
-  "Vessel Name",
-  "Port Name",
-  "Country",
-  "UNLOCODE / UNCTAD Code",
-  "Latitude / Longitude / Position",
-  "Time Zone",
-  "Port Stay / Date",
-  "Berth / Pier / Terminal",
-  "Cargo",
-  "Cargo Operations / Rate",
-  "Depth / Draft / Channel",
-  "Density",
-  "Tidal Range",
-  "Security Level",
-  "VHF / Communication",
-  "Agent / Contact",
-  "Publications / Charts",
-  "Additional Reference",
-  "Client Name",
-  "Quotation Date",
-  "Event Date",
-  "Location",
-  "Package Type",
-  "Total Estimate",
-  "Payment Terms",
-  "Invoice Number",
-  "Invoice Date",
-  "Vendor",
-  "Customer",
-  "Project Name",
-  "Prepared By",
-  "Prepared For"
-];
-
-const LOCAL_FALLBACK_RULE_ENGINE = {
-  version: 2,
-  fallbackValue: "Not Available",
-  visuals: {
-    enabled: false,
-    manualReviewRequired: true,
-    rejectTextHeavyCrops: true,
-    rejectIfTextDensityAbovePercent: 18
-  },
-  qualityRules: {
-    minimumSectionScore: 55,
-    minimumFieldScore: 62,
-    minimumValueLength: 3,
-    doNotGuessMissingValues: true,
-    rejectWeakValues: true,
-    sendWeakMatchesToReview: true
-  },
-  sectionRules: [
-    { concept: "keyInformation", targetAliases: ["key information", "summary", "basic details", "main details"], sourceSignals: ["vessel", "port", "country", "cargo", "agent", "time zone", "arrival", "berth"], negativeSignals: ["remarks", "notes", "crew change", "shore leave"] },
-    { concept: "arrivalPortStay", targetAliases: ["arrival", "port stay", "date", "eta", "etb", "etd"], sourceSignals: ["arrival", "date of arrival", "eta", "etb", "etd", "notice", "port stay", "anchored"], negativeSignals: ["agent", "invoice", "charts", "publications"] },
-    { concept: "anchorage", targetAliases: ["anchorage", "anchor", "waiting area"], sourceSignals: ["anchorage", "anchor", "anchored", "waiting", "roads", "outer anchorage"], negativeSignals: ["agent", "invoice", "cargo declaration"] },
-    { concept: "pilotageNavigation", targetAliases: ["pilotage", "approach", "navigation", "pilot", "vhf", "communication"], sourceSignals: ["pilot", "pilotage", "vhf", "channel", "boarding", "pilot ladder", "tug", "towage", "navigation", "approach"], negativeSignals: ["agent", "invoice", "cargo declaration", "supplier"] },
-    { concept: "berthTerminalDepth", targetAliases: ["berth", "terminal", "depth", "draft", "draught", "pier", "jetty"], sourceSignals: ["berth", "terminal", "pier", "jetty", "depth", "draft", "draught", "quay", "channel", "density", "salinity"], negativeSignals: ["agent", "crew", "documents", "invoice"] },
-    { concept: "cargoOperations", targetAliases: ["cargo", "operations", "loading", "discharging", "rate"], sourceSignals: ["cargo", "loading", "discharging", "operation", "rate", "shore scale", "loading rate", "discharging rate"], negativeSignals: ["agent", "pilot", "charts", "crew"] },
-    { concept: "agentsContacts", targetAliases: ["agent", "agents", "contact", "agency"], sourceSignals: ["agent", "agents", "agency", "contact", "phone", "email", "mobile", "pic"], negativeSignals: ["cargo", "pilot", "berth", "depth", "draft"] },
-    { concept: "documentsFormalities", targetAliases: ["documents", "formalities", "pre arrival", "requirements"], sourceSignals: ["documents", "crew list", "declaration", "certificate", "manifest", "passport", "ballast", "pre arrival", "formalities"], negativeSignals: ["agent contact", "berth depth", "cargo rate"] },
-    { concept: "regulationsRestrictions", targetAliases: ["regulations", "restrictions", "security", "health", "shore leave", "crew change"], sourceSignals: ["regulations", "restriction", "security", "isps", "health", "shore leave", "crew change", "inspection", "psc", "permitted", "not permitted"], negativeSignals: ["cargo rate", "berth depth", "agent email"] },
-    { concept: "servicesSupplies", targetAliases: ["services", "supplies", "waste", "fresh water", "bunkers"], sourceSignals: ["garbage", "bunker", "fresh water", "sludge", "stores", "provisions", "waste", "supply", "supplies"], negativeSignals: ["pilot", "vhf", "charts"] },
-    { concept: "publicationsCharts", targetAliases: ["publications", "charts", "nautical charts", "reference"], sourceSignals: ["charts", "publications", "enc", "enp", "admiralty", "pilot vol", "sailing directions"], negativeSignals: ["agent", "cargo", "invoice"] },
-    { concept: "remarksNotes", targetAliases: ["remarks", "notes", "experience", "detailed notes", "additional information"], sourceSignals: ["remarks", "note", "general information", "additional", "experience", "observed"], negativeSignals: [] }
-  ],
-  fieldRules: [
-    { concept: "vesselName", targetAliases: ["vessel", "vessel name", "ship", "m/v", "mv"], sourcePatterns: ["Vessel: {value}", "Vessel Name: {value}", "M/V: {value}", "MV {value}"], sourceSignals: ["vessel", "vessel name", "ship", "m/v", "mv"] },
-    { concept: "portName", targetAliases: ["port", "port name", "location"], sourcePatterns: ["Port: {value}", "Port Name: {value}", "Location: {value}"], sourceSignals: ["port", "port name", "location"] },
-    { concept: "country", targetAliases: ["country"], sourcePatterns: ["Country: {value}"], sourceSignals: ["country"] },
-    { concept: "arrivalDate", targetAliases: ["date", "arrival", "date of arrival", "eta", "etb", "etd", "port stay"], sourcePatterns: ["Date of Arrival: {value}", "Arrival: {value}", "ETA: {value}", "ETB: {value}", "ETD: {value}"], sourceSignals: ["date of arrival", "arrival", "eta", "etb", "etd", "port stay"] },
-    { concept: "berthTerminal", targetAliases: ["berth", "terminal", "pier", "jetty"], sourcePatterns: ["Berth: {value}", "Berth Name: {value}", "Terminal: {value}", "Pier: {value}", "Jetty: {value}"], sourceSignals: ["berth", "berth name", "terminal", "pier", "jetty"] },
-    { concept: "depthDraft", targetAliases: ["depth", "draft", "draught", "channel"], sourcePatterns: ["Depth: {value}", "Draft: {value}", "Draught: {value}", "Channel: {value}", "Berth Depth: {value}"], sourceSignals: ["depth", "draft", "draught", "channel", "berth depth"] },
-    { concept: "cargo", targetAliases: ["cargo", "commodity"], sourcePatterns: ["Cargo: {value}", "Commodity: {value}"], sourceSignals: ["cargo", "commodity"] },
-    { concept: "vhfCommunication", targetAliases: ["vhf", "communication", "channel", "radio"], sourcePatterns: ["VHF CHANNEL: {value}", "VHF: {value}", "Channel: {value}", "Pilot VHF: {value}"], sourceSignals: ["vhf", "channel", "radio", "communication"] },
-    { concept: "agentContact", targetAliases: ["agent", "agent / contact", "agents", "agency", "contact"], sourcePatterns: ["Agent: {value}", "Agents: {value}", "Agency: {value}", "Contact: {value}"], sourceSignals: ["agent", "agents", "agency", "contact", "phone", "email", "mobile"] },
-    { concept: "publicationsCharts", targetAliases: ["publications", "charts", "enc", "enp"], sourcePatterns: ["ENC: {value}", "Charts: {value}", "Publications: {value}"], sourceSignals: ["enc", "charts", "publications", "enp", "admiralty"] }
-  ]
-};
 
 bindEvents();
 setInitialState();
@@ -243,91 +167,20 @@ function handleSourceUpload(event) {
   setStatus(`${files.length} source PDF(s) uploaded.`);
 }
 
-function getController() {
-  return state.templateController || {};
-}
-
-function getDetectionRules() {
-  return getController().detectionRules || {};
-}
-
-function getOutputRules() {
-  return getController().outputRules || {};
-}
-
-function getVisualRules() {
-  return getController().visualRules || {};
-}
-
-function getRuleEngine() {
-  const remote = getController().ruleEngine || {};
-  const remoteSectionRules = Array.isArray(remote.sectionRules) ? remote.sectionRules : [];
-  const remoteFieldRules = Array.isArray(remote.fieldRules) ? remote.fieldRules : [];
-
-  return {
-    ...LOCAL_FALLBACK_RULE_ENGINE,
-    ...remote,
-    visuals: {
-      ...LOCAL_FALLBACK_RULE_ENGINE.visuals,
-      ...(remote.visuals || {})
-    },
-    qualityRules: {
-      ...LOCAL_FALLBACK_RULE_ENGINE.qualityRules,
-      ...(remote.qualityRules || {})
-    },
-    sectionRules: remoteSectionRules.length ? remoteSectionRules : LOCAL_FALLBACK_RULE_ENGINE.sectionRules,
-    fieldRules: remoteFieldRules.length ? remoteFieldRules : LOCAL_FALLBACK_RULE_ENGINE.fieldRules
-  };
-}
-
-function getQualityRules() {
-  return getRuleEngine().qualityRules || {};
-}
-
-function getSectionRules() {
-  return Array.isArray(getRuleEngine().sectionRules) ? getRuleEngine().sectionRules : [];
-}
-
-function getFieldRules() {
-  return Array.isArray(getRuleEngine().fieldRules) ? getRuleEngine().fieldRules : [];
-}
-
 function getFallbackValue() {
-  return (
-    getDetectionRules().missingValue ||
-    getController().fallbackValue ||
-    getRuleEngine().fallbackValue ||
-    "Not Available"
-  );
+  return "Not Available";
 }
 
 function boolRule(value, defaultValue) {
   return typeof value === "boolean" ? value : defaultValue;
 }
 
-function scoreFromPercent(value, fallback) {
-  const number = Number(value);
-  if (!Number.isFinite(number)) return fallback;
-  return number > 1 ? number / 100 : number;
-}
-
-function getMinimumSectionScore() {
-  return scoreFromPercent(getQualityRules().minimumSectionScore, CONFIG.mapping.minSectionScore);
-}
-
-function getMinimumFieldScore() {
-  return scoreFromPercent(getQualityRules().minimumFieldScore, CONFIG.mapping.minFieldScore);
-}
-
-function getMinimumValueLength() {
-  const value = Number(getQualityRules().minimumValueLength);
-  return Number.isFinite(value) && value > 0 ? value : 3;
+function getVisualRules() {
+  return CONFIG.visuals;
 }
 
 function isVisualCaptureEnabled() {
-  const detectionValue = boolRule(getDetectionRules().detectVisuals, false);
-  const ruleEngineValue = boolRule(getRuleEngine().visuals?.enabled, detectionValue);
-  return detectionValue && ruleEngineValue;
+  return true;
 }
 
 async function callSemanticMapper(payload) {
@@ -467,12 +320,521 @@ function buildVisionPagePayload(page) {
     pageNumber: page.pageNumber,
     extractedText: page.text || "",
     imageDataUrl: page.pageImage?.imageDataUrl || "",
+    imageMimeType:
+      page.pageImage?.imageMimeType ||
+      page.pageImage?.mimeType ||
+      detectDataUrlMime(page.pageImage?.imageDataUrl || ""),
     width: page.pageImage?.width || 0,
     height: page.pageImage?.height || 0
   };
 }
 
-async function runVisionBrain({ fileName, sourcePdf, sourceIdentity }) {
+/* =========================================================
+   FLEXIBLE ROUGH SOURCE IMPORT LAYER
+   ========================================================= */
+
+function clipForImport(value, maxChars = 9000) {
+  const text = String(value || "").trim();
+  return text.length > maxChars ? text.slice(0, maxChars) : text;
+}
+
+function roughNormalize(value) {
+  return String(value || "")
+    .replace(/\u00A0/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function detectDataUrlMime(dataUrl) {
+  const match = String(dataUrl || "").match(/^data:([^;]+);base64,/i);
+  return match ? match[1].toLowerCase() : "";
+}
+
+function getPageImageInfo(page) {
+  const pageImage = page?.pageImage || null;
+  if (!pageImage?.imageDataUrl) return null;
+
+  return {
+    imageDataUrl: pageImage.imageDataUrl,
+    imageMimeType:
+      pageImage.imageMimeType ||
+      pageImage.mimeType ||
+      detectDataUrlMime(pageImage.imageDataUrl) ||
+      "image/jpeg",
+    width: Number(pageImage.width || 0) || 0,
+    height: Number(pageImage.height || 0) || 0,
+    scale: Number(pageImage.scale || 0) || 0
+  };
+}
+
+function createRoughSourceImport(sourcePdf) {
+  const pages = Array.isArray(sourcePdf?.pages) ? sourcePdf.pages : [];
+  const images = [];
+
+  const content = pages.map((page) => {
+    const pageNumber = Number(page.pageNumber || 0) || null;
+    const blocks = buildRoughContentBlocks(page);
+    const roughArticles = groupBlocksIntoRoughArticles(blocks, pageNumber);
+
+    registerPageImageForRoughImport({
+      page,
+      pageNumber,
+      blocks,
+      images
+    });
+
+    registerVisualCandidatesForRoughImport({
+      page,
+      pageNumber,
+      images
+    });
+
+    return {
+      pageNumber,
+      rawText: clipForImport(page.text || "", 9000),
+      textLength: String(page.text || "").length,
+      blockCount: blocks.length,
+      blocks,
+      roughArticles
+    };
+  });
+
+  return {
+    pipelineVersion: "source_first_flexible_reconstruction_v1",
+    fileName: sourcePdf?.fileName || "",
+    pageCount: Number(sourcePdf?.pageCount || pages.length || 0),
+    createdAt: new Date().toISOString(),
+
+    buckets: {
+      content,
+      images
+    },
+
+    warnings: []
+  };
+}
+
+function buildRoughContentBlocks(page) {
+  const pageNumber = Number(page?.pageNumber || 0) || null;
+  const lines = Array.isArray(page?.lines) ? page.lines : [];
+
+  const blocks = [];
+  let paragraphBuffer = [];
+
+  function flushParagraph() {
+    const paragraph = roughNormalize(paragraphBuffer.join(" "));
+    paragraphBuffer = [];
+
+    if (!paragraph || paragraph.length < 3) return;
+
+    blocks.push({
+      type: "possible_paragraph",
+      text: paragraph,
+      pageNumber,
+      confidence: 0.55
+    });
+  }
+
+  for (const line of lines) {
+    const text = roughNormalize(line.text || "");
+    if (!text) continue;
+    if (isLikelyNoiseLine(text)) continue;
+
+    const heading = isRoughHeadingLine(line, text);
+    const keyValue = parseRoughKeyValue(text);
+    const listItem = parseRoughListItem(text);
+    const tableRow = parseRoughTableLikeRow(text, line);
+
+    if (heading) {
+      flushParagraph();
+      blocks.push({
+        type: "possible_heading",
+        text,
+        pageNumber,
+        fontSize: Number(line.fontSize || 0) || null,
+        confidence: heading.confidence
+      });
+      continue;
+    }
+
+    if (keyValue) {
+      flushParagraph();
+      blocks.push({
+        type: "possible_key_value",
+        label: keyValue.label,
+        value: keyValue.value,
+        text,
+        pageNumber,
+        confidence: keyValue.confidence
+      });
+      continue;
+    }
+
+    if (listItem) {
+      flushParagraph();
+      blocks.push({
+        type: "possible_list_item",
+        marker: listItem.marker,
+        text: listItem.text,
+        rawText: text,
+        pageNumber,
+        confidence: listItem.confidence
+      });
+      continue;
+    }
+
+    if (tableRow) {
+      flushParagraph();
+      blocks.push({
+        type: "possible_table_row",
+        cells: tableRow.cells,
+        text,
+        pageNumber,
+        confidence: tableRow.confidence
+      });
+      continue;
+    }
+
+    paragraphBuffer.push(text);
+  }
+
+  flushParagraph();
+
+  return mergeAdjacentListItems(blocks);
+}
+
+function isLikelyNoiseLine(text) {
+  const clean = roughNormalize(text);
+  if (!clean) return true;
+
+  if (/^page\s+\d+\s*(of\s+\d+)?$/i.test(clean)) return true;
+  if (/^\d+$/.test(clean)) return true;
+
+  if (
+    /\b(formatted document|template used|source file|generated on|generated at|system note|audit note|original source|rough import|source import)\b/i.test(clean)
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+function isRoughHeadingLine(line, text) {
+  const wordCount = text.split(/\s+/).filter(Boolean).length;
+  const isShort = wordCount <= 10 && text.length <= 90;
+  const isNumbered = /^\d+(\.\d+)*[.)]?\s+[A-Za-z]/.test(text);
+  const isAllCaps =
+    text.length >= 4 &&
+    text.length <= 90 &&
+    text === text.toUpperCase() &&
+    /[A-Z]/.test(text);
+
+  const isBoldish = Boolean(line?.isBoldish);
+  const fontSize = Number(line?.fontSize || 0) || 0;
+
+  if (isNumbered && isShort) return { confidence: 0.82 };
+  if (isAllCaps && isShort) return { confidence: 0.72 };
+  if (isBoldish && isShort) return { confidence: 0.68 };
+  if (fontSize >= 12 && isShort) return { confidence: 0.62 };
+
+  return null;
+}
+
+function parseRoughKeyValue(text) {
+  const clean = roughNormalize(text);
+
+  const match = clean.match(/^(.{2,80}?)(?:\s*[:：]\s*|\s+-\s+)(.{1,400})$/);
+  if (!match) return null;
+
+  const label = roughNormalize(match[1]);
+  const value = roughNormalize(match[2]);
+
+  if (!label || !value) return null;
+  if (label.split(/\s+/).length > 10) return null;
+  if (/[.!?]$/.test(label)) return null;
+
+  return {
+    label,
+    value,
+    confidence: 0.72
+  };
+}
+
+function parseRoughListItem(text) {
+  const clean = roughNormalize(text);
+
+  const match = clean.match(/^(\(?[a-zA-Z0-9]{1,4}\)?[.)]|[-•*–—])\s+(.{2,})$/);
+  if (!match) return null;
+
+  return {
+    marker: match[1],
+    text: roughNormalize(match[2]),
+    confidence: 0.7
+  };
+}
+
+function parseRoughTableLikeRow(text, line) {
+  const clean = roughNormalize(text);
+
+  if (clean.includes("|")) {
+    const cells = clean
+      .split("|")
+      .map((cell) => roughNormalize(cell))
+      .filter(Boolean);
+
+    if (cells.length >= 2) {
+      return {
+        cells,
+        confidence: 0.72
+      };
+    }
+  }
+
+  const tokens = clean.split(/\s+/).filter(Boolean);
+  const numericTokens = tokens.filter((token) => /\d/.test(token)).length;
+  const itemCount = Number(line?.itemCount || 0) || 0;
+
+  if (tokens.length >= 5 && itemCount >= 4 && numericTokens >= 2) {
+    return {
+      cells: tokens,
+      confidence: 0.38
+    };
+  }
+
+  return null;
+}
+
+function mergeAdjacentListItems(blocks) {
+  const result = [];
+
+  for (const block of blocks) {
+    const previous = result[result.length - 1];
+
+    if (block.type === "possible_list_item" && previous?.type === "possible_list") {
+      previous.items.push(block.text);
+      previous.rawItems.push(block);
+      previous.confidence = Math.max(previous.confidence || 0, block.confidence || 0);
+      continue;
+    }
+
+    if (block.type === "possible_list_item") {
+      result.push({
+        type: "possible_list",
+        items: [block.text],
+        rawItems: [block],
+        pageNumber: block.pageNumber,
+        confidence: block.confidence || 0.65
+      });
+      continue;
+    }
+
+    result.push(block);
+  }
+
+  return result;
+}
+
+function groupBlocksIntoRoughArticles(blocks, pageNumber) {
+  const articles = [];
+  let current = {
+    heading: `Page ${pageNumber} Content`,
+    pageNumber,
+    blocks: []
+  };
+
+  for (const block of blocks || []) {
+    if (block.type === "possible_heading") {
+      if (current.blocks.length) articles.push(current);
+
+      current = {
+        heading: block.text,
+        pageNumber,
+        headingBlock: block,
+        blocks: []
+      };
+      continue;
+    }
+
+    current.blocks.push(block);
+  }
+
+  if (current.blocks.length || current.headingBlock) {
+    articles.push(current);
+  }
+
+  return articles;
+}
+
+function registerPageImageForRoughImport({ page, pageNumber, blocks, images }) {
+  const pageImage = getPageImageInfo(page);
+  if (!pageImage?.imageDataUrl) return;
+
+  const textLength = String(page?.text || "").trim().length;
+  const hasVeryLittleText = textLength < 120;
+  const hasNoUsefulBlocks = !Array.isArray(blocks) || blocks.length <= 1;
+
+  let visualRole = "page_snapshot_with_text_layer";
+
+  if (hasVeryLittleText || hasNoUsefulBlocks) {
+    visualRole = "possible_scanned_text_or_screenshot";
+  } else if ((page?.visualCandidates || []).length) {
+    visualRole = "page_snapshot_with_visual_candidate";
+  }
+
+  images.push({
+    assetId: `page-${pageNumber}-snapshot`,
+    assetType: "page_snapshot",
+    visualRole,
+    sourcePage: pageNumber,
+    imageDataUrl: pageImage.imageDataUrl,
+    imageMimeType: pageImage.imageMimeType,
+    width: pageImage.width,
+    height: pageImage.height,
+    containsLikelyTextImage: visualRole === "possible_scanned_text_or_screenshot",
+    shouldUseVision: true,
+    captionGuess: `Page ${pageNumber} source snapshot`
+  });
+}
+
+function registerVisualCandidatesForRoughImport({ page, pageNumber, images }) {
+  const candidates = Array.isArray(page?.visualCandidates) ? page.visualCandidates : [];
+
+  for (let index = 0; index < candidates.length; index++) {
+    const visual = candidates[index];
+
+    images.push({
+      assetId: `page-${pageNumber}-visual-${index + 1}`,
+      assetType: "visual_candidate",
+      visualRole: "possible_photo_chart_table_or_diagram",
+      sourcePage: pageNumber,
+      crop: visual.crop || null,
+      scaledCrop: visual.scaledCrop || null,
+      width: Number(visual.renderedWidth || 0) || 0,
+      height: Number(visual.renderedHeight || 0) || 0,
+      confidence: Number(visual.confidence || 0) || 0,
+      textCoverageRatio: Number(visual.textCoverageRatio || 0) || 0,
+      containsLikelyTextImage: true,
+      shouldUseVision: true,
+      captionGuess: `Possible visual reference from page ${pageNumber}`
+    });
+  }
+}
+
+function attachVisionToRoughImport(roughSourceImport, visionPages) {
+  const visionByPage = new Map(
+    (visionPages || []).map((page) => [Number(page.pageNumber), page])
+  );
+
+  for (const contentPage of roughSourceImport?.buckets?.content || []) {
+    const vision = visionByPage.get(Number(contentPage.pageNumber));
+    contentPage.vision = compactVisionForRoughImport(vision);
+  }
+
+  for (const image of roughSourceImport?.buckets?.images || []) {
+    const vision = visionByPage.get(Number(image.sourcePage));
+    image.vision = compactVisionForRoughImport(vision);
+  }
+
+  return roughSourceImport;
+}
+
+function compactVisionForRoughImport(visionPage) {
+  if (!visionPage) return null;
+
+  return {
+    pageNumber: Number(visionPage.pageNumber || 0) || null,
+    pageRole: roughNormalize(visionPage.pageRole || ""),
+
+    textBlocks: (visionPage.textBlocks || [])
+      .slice(0, 14)
+      .map((block) => ({
+        type: roughNormalize(block.type || ""),
+        text: clipForImport(block.text || "", 1200),
+        position: roughNormalize(block.position || ""),
+        importance: roughNormalize(block.importance || "")
+      }))
+      .filter((block) => block.text),
+
+    lists: (visionPage.lists || [])
+      .slice(0, 8)
+      .map((list) => ({
+        heading: roughNormalize(list.heading || ""),
+        items: (list.items || [])
+          .map((item) => roughNormalize(item))
+          .filter(Boolean)
+          .slice(0, 20),
+        position: roughNormalize(list.position || ""),
+        importance: roughNormalize(list.importance || "")
+      }))
+      .filter((list) => list.heading || list.items.length),
+
+    tables: (visionPage.tables || [])
+      .slice(0, 8)
+      .map((table) => ({
+        heading: roughNormalize(table.heading || ""),
+        headers: (table.headers || [])
+          .map((item) => roughNormalize(item))
+          .filter(Boolean)
+          .slice(0, 10),
+        rows: (table.rows || [])
+          .slice(0, 20)
+          .map((row) =>
+            Array.isArray(row)
+              ? row.map((cell) => roughNormalize(cell)).slice(0, 10)
+              : [roughNormalize(row)]
+          )
+          .filter((row) => row.some(Boolean)),
+        position: roughNormalize(table.position || ""),
+        importance: roughNormalize(table.importance || "")
+      }))
+      .filter((table) => table.heading || table.headers.length || table.rows.length),
+
+    visualBlocks: (visionPage.visualBlocks || [])
+      .slice(0, 8)
+      .map((visual) => ({
+        kind: roughNormalize(visual.kind || ""),
+        caption: roughNormalize(visual.caption || ""),
+        description: clipForImport(visual.description || "", 1200),
+        position: roughNormalize(visual.position || ""),
+        importance: roughNormalize(visual.importance || "")
+      }))
+      .filter((visual) => visual.caption || visual.description)
+  };
+}
+
+function compactRoughSourceImportForAi(roughSourceImport) {
+  return {
+    pipelineVersion: roughSourceImport.pipelineVersion,
+    fileName: roughSourceImport.fileName,
+    pageCount: roughSourceImport.pageCount,
+
+    buckets: {
+      content: (roughSourceImport.buckets?.content || []).map((page) => ({
+        pageNumber: page.pageNumber,
+        rawText: clipForImport(page.rawText || "", 7000),
+        blocks: (page.blocks || []).slice(0, 80),
+        roughArticles: (page.roughArticles || []).slice(0, 20),
+        vision: page.vision
+      })),
+
+      images: (roughSourceImport.buckets?.images || []).map((image) => ({
+        assetId: image.assetId,
+        assetType: image.assetType,
+        visualRole: image.visualRole,
+        sourcePage: image.sourcePage,
+        imageMimeType: image.imageMimeType,
+        width: image.width,
+        height: image.height,
+        containsLikelyTextImage: image.containsLikelyTextImage,
+        shouldUseVision: image.shouldUseVision,
+        captionGuess: image.captionGuess,
+        vision: image.vision
+      }))
+    }
+  };
+}
+
+async function runVisionBrain({ fileName, sourcePdf, sourceContext = {} }) {
   const pages = Array.isArray(sourcePdf.pages) ? sourcePdf.pages : [];
   const results = [];
 
@@ -484,13 +846,12 @@ async function runVisionBrain({ fileName, sourcePdf, sourceIdentity }) {
       pageNumber: page.pageNumber
     });
 
-    const visionModel = await callSemanticMapper({
-      mode: "vision_page",
-      fileName,
-      sourceIdentity,
-      page: buildVisionPagePayload(page)
-    });
-
+const visionModel = await callSemanticMapper({
+  mode: "vision_page",
+  fileName,
+  sourceContext,
+  page: buildVisionPagePayload(page)
+});
     results.push({
       ...visionModel,
       pageNumber: page.pageNumber,
@@ -613,94 +974,54 @@ function coverageItemsFromVisionPages(visionPages) {
   ).filter((item) => item.detail);
 }
 
-async function runSecondBrain({ fileName, sourcePdf, templateContract }) {
-  const template = buildTemplatePayload(templateContract);
-
-  console.log("Second brain: identity + summary started", fileName);
-
-  const identityModel = await callSemanticMapper({
-    mode: "identity_summary",
-    fileName,
-    template,
-    firstPagesText: buildFirstPagesText(sourcePdf, 3)
-  });
-
-  console.log("Second brain: identity + summary completed", identityModel);
-
-const sourceIdentity = identityModel.sourceIdentity || {};
-
-const visionPages = await runVisionBrain({
+async function runFlexibleReconstructionBrain({
   fileName,
   sourcePdf,
-  sourceIdentity
-});
+  templateStyleProfile
+}) {
+  console.log("Flexible reconstruction: rough source import started", fileName);
 
-const chunks = buildBrainPageChunks(sourcePdf, 4, 18000);
-const coverageModels = [];
+  const roughSourceImport = createRoughSourceImport(sourcePdf);
 
-  for (const chunk of chunks) {
-    console.log("Second brain: coverage chunk started", {
-      fileName,
-      chunkId: chunk.chunkId,
-      pageNumbers: chunk.pageNumbers
-    });
+  console.log("Flexible reconstruction: vision pass started", fileName);
 
-const chunkModel = await callSemanticMapper({
-  mode: "coverage_chunk",
-  fileName,
-  sourceIdentity,
-  chunkId: chunk.chunkId,
-  pages: chunk.pages,
-  visionPages: visionItemsForChunk(visionPages, chunk.pageNumbers)
-});
-
-    coverageModels.push(chunkModel);
-
-    console.log("Second brain: coverage chunk completed", {
-      fileName,
-      chunkId: chunk.chunkId,
-      items: Array.isArray(chunkModel.coverageItems) ? chunkModel.coverageItems.length : 0
-    });
-  }
-
-const coverageItems = dedupeCoverageItems([
-  ...coverageModels.flatMap((model) =>
-    Array.isArray(model.coverageItems) ? model.coverageItems : []
-  ),
-  ...coverageItemsFromVisionPages(visionPages)
-]);
-
-  console.log("Second brain: final formatting started", {
+  const visionPages = await runVisionBrain({
     fileName,
-    coverageItemCount: coverageItems.length
+    sourcePdf,
+    sourceContext: {
+      documentType: "unknown",
+      primarySubject: fileName,
+      note: "Generic source document. No port-specific assumptions."
+    }
   });
 
-const finalModel = await callSemanticMapper({
-  mode: "final_format",
-  fileName,
-  template,
-  sourceIdentity,
-  summaryRows: Array.isArray(identityModel.summaryRows) ? identityModel.summaryRows : [],
-  coverageItems,
-  visionPages: compactVisionPagesForFinal(visionPages)
-});
+  attachVisionToRoughImport(roughSourceImport, visionPages);
 
-finalModel.sourceIdentity = sourceIdentity;
-finalModel.firstBrainTitle = identityModel.title || "";
-finalModel.firstBrainSummaryRows = Array.isArray(identityModel.summaryRows)
-  ? identityModel.summaryRows
-  : [];
-finalModel.extractedCoverageItems = coverageItems;
-finalModel.visionPages = visionPages;  
-finalModel.templateTitle = template.title || "";
+  state.roughImports.push(roughSourceImport);
 
-finalModel.coverageAudit = finalModel.coverageAudit || {};
-finalModel.coverageAudit.extractedCoverageItemCount = coverageItems.length;
-finalModel.coverageAudit.sourceCoverageMode = "second_brain_chunked";
+  console.log("Flexible reconstruction: AI reconstruction started", {
+    fileName,
+    contentPages: roughSourceImport.buckets.content.length,
+    imageAssets: roughSourceImport.buckets.images.length
+  });
 
-console.log("Second brain: final formatting completed", finalModel);
+  const finalModel = await callSemanticMapper({
+    mode: "reconstruct_document",
+    fileName,
+    templateStyleProfile,
+    roughSourceImport: compactRoughSourceImportForAi(roughSourceImport)
+  });
 
-return finalModel;
+  finalModel.roughSourceImport = roughSourceImport;
+  finalModel.visionPages = visionPages;
+  finalModel.templateStyleProfile = templateStyleProfile;
+
+  finalModel.coverageAudit = finalModel.coverageAudit || {};
+  finalModel.coverageAudit.sourceCoverageMode = "flexible_rough_import_reconstruction";
+
+  console.log("Flexible reconstruction: AI reconstruction completed", finalModel);
+
+  return finalModel;
 }
 
 function isUsableSemanticModel(semanticModel) {
@@ -906,15 +1227,45 @@ function buildCoverageAuditSection(semanticModel, nextOrder) {
   };
 }
 
-function isUsefulIdentityValue(value) {
-  const text = normalizeLine(value || "");
-  const clean = comparable(text);
+function buildSourceLockedTitle({ semanticModel, sourcePdf }) {
+  const titleCandidates = [
+    semanticModel?.title,
+    semanticModel?.documentProfile?.primaryTitle,
+    semanticModel?.documentProfile?.likelySubject,
+    semanticModel?.documentProfile?.primarySubject
+  ]
+    .map((item) => cleanDocumentTitle(item || ""))
+    .filter(Boolean)
+    .filter((item) => !isBadGeneratedTitle(item, semanticModel));
 
-  if (!text || !clean) return false;
-  if (clean === comparable(getFallbackValue())) return false;
-  if (/^(n\/?a|nil|null|none|unknown|not available)$/i.test(text)) return false;
+  if (titleCandidates.length) {
+    return titleCandidates[0];
+  }
 
-  return true;
+  return cleanDocumentTitle(
+    removePdfExtension(sourcePdf?.fileName || "Document").replace(/[_-]+/g, " ")
+  );
+}
+
+function isBadGeneratedTitle(title, semanticModel) {
+  const clean = comparable(title || "");
+  if (!clean) return true;
+
+  if (
+    /\b(formatted document|template based|template-based|source import|rough import|final output|reconstructed document)\b/i.test(title)
+  ) {
+    return true;
+  }
+
+  const templateTitle = comparable(
+    semanticModel?.templateStyleProfile?.referenceTitle || ""
+  );
+
+  if (templateTitle && clean === templateTitle) {
+    return true;
+  }
+
+  return false;
 }
 
 function shouldRejectSemanticTitle(title, semanticModel) {
@@ -944,199 +1295,6 @@ function shouldRejectSemanticTitle(title, semanticModel) {
   return false;
 }
 
-function buildSourceLockedTitle({ semanticModel, sourcePdf }) {
-  const identity = semanticModel?.sourceIdentity || {};
-
-  const vessel = isUsefulIdentityValue(identity.vesselName)
-    ? normalizeVesselName(identity.vesselName)
-    : "";
-
-  const port = isUsefulIdentityValue(identity.portName)
-    ? cleanHeading(identity.portName)
-    : "";
-
-  const country = isUsefulIdentityValue(identity.country)
-    ? cleanHeading(identity.country)
-    : "";
-
-  const subject = isUsefulIdentityValue(identity.primarySubject)
-    ? cleanHeading(identity.primarySubject)
-    : "";
-
-  const dateOrPeriod = isUsefulIdentityValue(identity.dateOrPeriod)
-    ? cleanHeading(identity.dateOrPeriod)
-    : "";
-
-  if (port && country && vessel) {
-    return cleanDocumentTitle(`${port}, ${country} - ${vessel}${dateOrPeriod ? ` - ${dateOrPeriod}` : ""}`);
-  }
-
-  if (subject && !shouldRejectSemanticTitle(subject, semanticModel)) {
-    return cleanDocumentTitle(subject);
-  }
-
-  if (semanticModel?.title && !shouldRejectSemanticTitle(semanticModel.title, semanticModel)) {
-    return cleanDocumentTitle(semanticModel.title);
-  }
-
-  return cleanDocumentTitle(removePdfExtension(sourcePdf?.fileName || "Document").replace(/[_-]+/g, " "));
-}
-
-function getSummaryFieldKind(field) {
-  const text = comparable(`${field?.label || ""} ${field?.key || ""}`);
-
-  if (/\bvessel\b|\bship\b|\bmv\b|\bm\/v\b/.test(text)) return "vessel";
-  if (/\bport name\b|\bport\b|\blocation\b/.test(text)) return "port";
-  if (/\bcountry\b/.test(text)) return "country";
-  if (/\bunlocode\b|\bunctad\b/.test(text)) return "code";
-  if (/\blatitude\b|\blongitude\b|\bposition\b|\blat\b|\blong\b/.test(text)) return "position";
-  if (/\btime zone\b|\btimezone\b|\bgmt\b|\butc\b/.test(text)) return "timeZone";
-  if (/\bstay\b|\bdate\b|\beta\b|\betb\b|\betd\b/.test(text)) return "date";
-  if (/\bberth\b|\bpier\b|\bterminal\b|\bjetty\b/.test(text)) return "berth";
-  if (/\bcargo operations\b|\brate\b|\bloading rate\b|\bdischarging rate\b/.test(text)) return "rate";
-  if (/\bcargo\b|\bcommodity\b/.test(text)) return "cargo";
-  if (/\bdepth\b|\bdraft\b|\bdraught\b|\bchannel\b/.test(text)) return "depth";
-  if (/\bdensity\b/.test(text)) return "density";
-  if (/\btidal\b|\btide\b/.test(text)) return "tide";
-  if (/\bsecurity\b|\bisps\b/.test(text)) return "security";
-  if (/\bvhf\b|\bcommunication\b|\bchannel\b|\bradio\b/.test(text)) return "vhf";
-  if (/\bagent\b|\bcontact\b|\bagency\b|\bcontacts\b/.test(text)) return "contact";
-  if (/\bpublication\b|\bchart\b|\benc\b|\benp\b/.test(text)) return "charts";
-
-  return "general";
-}
-
-function isMissingSummaryValue(value) {
-  const text = normalizeLine(value || "");
-  const clean = comparable(text);
-
-  return (
-    !text ||
-    !clean ||
-    clean === comparable(getFallbackValue()) ||
-    /^(n\/?a|nil|null|none|unknown|not available|unreadable)$/i.test(text)
-  );
-}
-
-function isSafeSummaryFieldValue(field, value, sourcePdf, evidence = "") {
-  const kind = getSummaryFieldKind(field);
-  const text = normalizeLine(value || "");
-  const clean = comparable(text);
-  const sourceFirstPages = comparable(
-    (sourcePdf?.pages || [])
-      .slice(0, 3)
-      .map((page) => page.text || "")
-      .join("\n")
-  );
-  const evidenceClean = comparable(evidence || "");
-
-  if (isMissingSummaryValue(text)) return false;
-  if (text.length > 180 && !["contact", "charts"].includes(kind)) return false;
-
-  if (/\b(keep the cabins|cargo manifest or b\/l|quantity in drums|money or cigarettes|porno videos|warning|please pay special attention)\b/i.test(text)) {
-    return false;
-  }
-
-  switch (kind) {
-    case "vessel":
-      return /^(CS|MV|M\/V)\s+[A-Z0-9][A-Z0-9 .'-]{1,45}$/i.test(text);
-
-    case "port":
-      return /[A-Za-z]/.test(text) &&
-        !/\d{2,}|@|berth|depth|channel|manifest|quantity|cabin|warning/i.test(text);
-
-    case "country":
-      return /[A-Za-z]/.test(text) &&
-        !/\d|@|berth|depth|channel|manifest|quantity/i.test(text) &&
-        text.length <= 60;
-
-    case "position":
-      if (/^\d{4,}/.test(text.replace(/\s+/g, ""))) return false;
-      if (/phone|tel|fax|mob|mobile|berth|depth|channel/i.test(text)) return false;
-
-      return (
-        /\b\d{1,2}[°\s]+\d{1,2}(?:\.\d+)?['’]?\s*[NS]\b.*\b\d{1,3}[°\s]+\d{1,2}(?:\.\d+)?['’]?\s*[EW]\b/i.test(text) &&
-        (
-          sourceFirstPages.includes(clean) ||
-          /\blat|long|position\b/i.test(evidence || "") ||
-          /\blat|long|position\b/.test(evidenceClean)
-        )
-      );
-
-    case "timeZone":
-      return /\b(GMT|UTC|SMT)\b/i.test(text) && !/berth|depth|agent|phone|fax|mail/i.test(text);
-
-    case "date":
-      return /\b\d{1,2}\s*\/?\s*(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\s*\/?\s*\d{2,4}\b/i.test(text) ||
-        /\b\d{1,2}\s*(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\s*\d{2,4}\b/i.test(text);
-
-    case "berth":
-      return /\bberth\b|\bterminal\b|\bpier\b|\bjetty\b|\b\d+\s*\/\s*\d+\b/i.test(text) &&
-        !/depth|channel|agent|phone|mail|fax/i.test(text);
-
-    case "cargo":
-      return /[A-Za-z]/.test(text) &&
-        !/manifest|b\/l|document|phone|email|berth|depth/i.test(text) &&
-        text.length <= 100;
-
-    case "rate":
-      return /\b\d/.test(text) &&
-        /\b(mt|mmt|ton|tons|day|agw|wp|rate|gang)\b/i.test(text);
-
-    case "depth":
-      return /\b(berth|channel|depth|draft|draught)\b/i.test(text) &&
-        /\d+(?:\.\d+)?\s*m\b/i.test(text);
-
-    case "density":
-      return /^\s*\d+(?:\.\d+)?(?:\s*[-–—]\s*\d+(?:\.\d+)?)?\s*$/.test(text);
-
-    case "tide":
-      return /\d/.test(text) && /\b(m|mtr|meter|metre|tidal|tide)\b/i.test(text);
-
-    case "security":
-      return /\b(isps|security|level\s*\d)\b/i.test(text) &&
-        !/^e-?mail|@/i.test(text);
-
-    case "vhf":
-      return /\b(vhf|ch|channel)\b/i.test(text) &&
-        !/\bberth\s*:?\s*\d|depth|channel\s*:?\s*13\.?5|agent|phone|tel|fax|email\b/i.test(text);
-
-    case "contact":
-      return /\b(agent|logistics|shipping|phone|tel|fax|mail|email|mobile|mob|manager|director)\b/i.test(text) ||
-        /@/.test(text);
-
-    case "charts":
-      return /\b(chart|charts|enc|publication|pilot|reference|nautical)\b/i.test(text);
-
-    default:
-      return true;
-  }
-}
-
-function pickSafeSummaryValue({ field, sourcePdf, fallbackValue, candidates }) {
-  for (const candidate of candidates) {
-    const value = normalizeLine(candidate?.value || "");
-    const evidence = normalizeLine(candidate?.evidence || "");
-
-    if (
-      value &&
-      comparable(value) !== comparable(fallbackValue) &&
-      isSafeSummaryFieldValue(field, value, sourcePdf, evidence)
-    ) {
-      return {
-        value,
-        confidence: Number(candidate?.confidence || 0),
-        evidence
-      };
-    }
-  }
-
-  return {
-    value: fallbackValue,
-    confidence: 0,
-    evidence: ""
-  };
-}
 
 function getSourcePageImage(sourcePdf, pageNumber) {
   const page = (sourcePdf?.pages || []).find((item) => Number(item.pageNumber) === Number(pageNumber));
@@ -1144,13 +1302,28 @@ function getSourcePageImage(sourcePdf, pageNumber) {
 }
 
 function materializeImageBlocksFromSourcePages({ semanticModel, sourcePdf, sections }) {
-  const visionPages = Array.isArray(semanticModel?.visionPages)
-    ? semanticModel.visionPages
-    : [];
+  const imageAssets = semanticModel?.roughSourceImport?.buckets?.images || [];
+  const imageByAssetId = new Map(imageAssets.map((image) => [image.assetId, image]));
 
   for (const section of sections) {
     for (const block of section.blocks || []) {
       if (block.type !== "image") continue;
+
+      const assetId = block.imageAssetId || block.assetId || "";
+      const asset = assetId ? imageByAssetId.get(assetId) : null;
+
+      if (asset?.imageDataUrl) {
+        block.imageDataUrl = asset.imageDataUrl;
+        block.imageMimeType = asset.imageMimeType || detectDataUrlMime(asset.imageDataUrl);
+        block.imageWidth = asset.width || 0;
+        block.imageHeight = asset.height || 0;
+        block.pageNumber = asset.sourcePage || block.sourcePage || null;
+        block.sourcePage = asset.sourcePage || block.sourcePage || null;
+        block.pageNumbers = block.sourcePage ? [block.sourcePage] : [];
+        block.caption = normalizeLine(block.caption || asset.captionGuess || `Visual reference from page ${block.sourcePage}`);
+        block.text = block.caption;
+        continue;
+      }
 
       const pageNumber =
         Number(block.sourcePage || block.pageNumber || block.pageNumbers?.[0] || 0) ||
@@ -1162,206 +1335,84 @@ function materializeImageBlocksFromSourcePages({ semanticModel, sourcePdf, secti
 
       if (pageImage?.imageDataUrl) {
         block.imageDataUrl = pageImage.imageDataUrl;
+        block.imageMimeType =
+          pageImage.imageMimeType ||
+          pageImage.mimeType ||
+          detectDataUrlMime(pageImage.imageDataUrl);
         block.imageWidth = pageImage.width;
         block.imageHeight = pageImage.height;
         block.pageNumber = pageNumber;
-        block.caption = normalizeLine(block.caption || block.text || `Source visual from page ${pageNumber}`);
+        block.sourcePage = pageNumber;
+        block.pageNumbers = [pageNumber];
+        block.caption = normalizeLine(block.caption || block.text || `Visual reference from page ${pageNumber}`);
         block.text = block.caption;
       }
     }
   }
 
-  const existingImageKeys = new Set(
-    sections.flatMap((section) =>
-      (section.blocks || [])
-        .filter((block) => block.type === "image")
-        .map((block) => `${block.pageNumber || block.sourcePage || block.pageNumbers?.[0] || ""}|${comparable(block.caption || block.text || "")}`)
-    )
-  );
-
-  const visualBlocks = visionPages.flatMap((page) =>
-    (page.visualBlocks || []).map((visual) => ({
-      pageNumber: page.pageNumber,
-      caption: normalizeLine(visual.caption || visual.description || `Visual reference from page ${page.pageNumber}`),
-      description: normalizeLine(visual.description || ""),
-      kind: normalizeLine(visual.kind || "visual")
-    }))
-  );
-
-  if (!visualBlocks.length) return sections;
-
-  let visualSection = sections.find((section) =>
-    /visual|image|photo|screenshot|chart|reference/i.test(section.heading || "")
-  );
-
-  if (!visualSection) {
-    visualSection = {
-      id: `ai-visual-section-${sections.length + 1}`,
-      order: sections.length + 1,
-      heading: "Visual References",
-      blocks: [],
-      matchedSourceIds: [],
-      score: 1,
-      pageNumbers: []
-    };
-    sections.push(visualSection);
-  }
-
-  for (const visual of visualBlocks) {
-    const key = `${visual.pageNumber}|${comparable(visual.caption)}`;
-    if (existingImageKeys.has(key)) continue;
-
-    const pageImage = getSourcePageImage(sourcePdf, visual.pageNumber);
-    if (!pageImage?.imageDataUrl) continue;
-
-    visualSection.blocks.push({
-      type: "image",
-      imageDataUrl: pageImage.imageDataUrl,
-      imageWidth: pageImage.width,
-      imageHeight: pageImage.height,
-      pageNumber: visual.pageNumber,
-      sourcePage: visual.pageNumber,
-      pageNumbers: [visual.pageNumber],
-      caption: visual.caption,
-      text: visual.caption
-    });
-
-    visualSection.pageNumbers = uniqueNumbers([
-      ...(visualSection.pageNumbers || []),
-      visual.pageNumber
-    ]);
-  }
-
   return sections;
 }
 
-function buildDocumentModelFromSemanticModel({ semanticModel, sourcePdf, templateContract, sourceProfile = null }) {  const fallbackValue = getFallbackValue();
-const firstBrainSummaryRows = Array.isArray(semanticModel?.firstBrainSummaryRows)
-  ? semanticModel.firstBrainSummaryRows
-  : [];
+function buildDocumentModelFromSemanticModel({ semanticModel, sourcePdf }) {
+  if (!semanticModel || typeof semanticModel !== "object") {
+    throw new Error("AI reconstruction returned an empty or invalid model.");
+  }
 
-const finalBrainSummaryRows = Array.isArray(semanticModel?.summaryRows)
-  ? semanticModel.summaryRows
-  : [];
+  const fallbackValue = getFallbackValue();
 
-const fallbackSummaryRows = sourceProfile
-  ? buildSummaryRows(templateContract.headerFields || [], sourceProfile.keyValueFacts || [])
-  : [];
-
-const summaryRows = (templateContract.headerFields || []).map((field) => {
-  const fieldKey = comparable(field.key || "");
-  const fieldLabel = comparable(field.label || "");
-
-const firstBrainMatch = firstBrainSummaryRows.find((row) => {
-  const rowKey = comparable(row.key || "");
-  const rowLabel = comparable(row.label || "");
-
-  return (
-    (rowKey && fieldKey && rowKey === fieldKey) ||
-    (rowLabel && fieldLabel && rowLabel === fieldLabel)
-  );
-});
-
-const finalBrainMatch = finalBrainSummaryRows.find((row) => {
-  const rowKey = comparable(row.key || "");
-  const rowLabel = comparable(row.label || "");
-
-  return (
-    (rowKey && fieldKey && rowKey === fieldKey) ||
-    (rowLabel && fieldLabel && rowLabel === fieldLabel)
-  );
-});
-
-  const fallbackMatch = fallbackSummaryRows.find((row) => {
-    const rowKey = comparable(row.key || "");
-    const rowLabel = comparable(row.label || "");
-
-    return (
-      (rowKey && fieldKey && rowKey === fieldKey) ||
-      (rowLabel && fieldLabel && rowLabel === fieldLabel)
-    );
-  });
-
-const firstBrainValue = normalizeLine(firstBrainMatch?.value || "");
-const finalBrainValue = normalizeLine(finalBrainMatch?.value || "");
-const fallbackValueForField = normalizeLine(fallbackMatch?.value || "");
-
-const useFirstBrainValue =
-  firstBrainValue &&
-  comparable(firstBrainValue) !== comparable(fallbackValue);
-
-const useFinalBrainValue =
-  finalBrainValue &&
-  comparable(finalBrainValue) !== comparable(fallbackValue);
-
-const useFallbackValue =
-  fallbackValueForField &&
-  comparable(fallbackValueForField) !== comparable(fallbackValue);
-
-const picked = pickSafeSummaryValue({
-  field,
-  sourcePdf,
-  fallbackValue,
-  candidates: [
-    firstBrainMatch,
-    finalBrainMatch,
-    fallbackMatch
-  ]
-});
-
-return {
-  key: field.key,
-  label: cleanHeading(field.label),
-  value: picked.value,
-  confidence: picked.confidence,
-  evidence: picked.evidence
-};
-});
-
-  const aiSections = Array.isArray(semanticModel?.sections)
-    ? semanticModel.sections
+  const summaryRows = Array.isArray(semanticModel.summaryRows)
+    ? semanticModel.summaryRows
+        .map((row, index) => ({
+          key: row.key || comparable(row.label || `summary_${index + 1}`).replace(/\s+/g, "_"),
+          label: cleanHeading(row.label || row.key || `Detail ${index + 1}`),
+          value: normalizeLine(row.value || fallbackValue),
+          confidence: Number(row.confidence || 0) || 0,
+          evidence: normalizeLine(row.evidence || ""),
+          sourcePage: Number(row.sourcePage || 0) || null
+        }))
+        .filter((row) => row.label && row.value)
     : [];
 
-  let sections = aiSections
-  .map((section, index) => {
-    const blocks = Array.isArray(section.blocks)
-      ? section.blocks
-          .filter((block) => hasAiBlockContent(block))
-          .map((block) => ({
-          ...normalizeAiBlock(block),
-         sourceHeading: section.heading || "",
-         pageNumbers: block.sourcePage ? [block.sourcePage] : []
-        }))
-      : [];
+  let sections = Array.isArray(semanticModel.sections)
+    ? semanticModel.sections
+        .map((section, index) => {
+          const blocks = Array.isArray(section.blocks)
+            ? section.blocks
+                .filter((block) => hasAiBlockContent(block))
+                .map((block) => ({
+                  ...normalizeAiBlock(block),
+                  sourceHeading: section.heading || "",
+                  pageNumbers: block.sourcePage ? [block.sourcePage] : []
+                }))
+            : [];
 
-    return {
-      id: `ai-section-${index + 1}`,
-      order: index + 1,
-      heading: cleanHeading(section.heading || `Section ${index + 1}`),
-      blocks,
-      matchedSourceIds: [],
-      score: 1,
-      pageNumbers: uniqueNumbers(blocks.flatMap((block) => block.pageNumbers || []))
-    };
-  })
-  .filter((section) =>
-    section.heading &&
-    section.blocks.some((block) => hasRenderableBlock(block))
-  );
+          return {
+            id: `ai-section-${index + 1}`,
+            order: index + 1,
+            heading: cleanHeading(section.heading || `Section ${index + 1}`),
+            blocks,
+            matchedSourceIds: [],
+            score: 1,
+            pageNumbers: uniqueNumbers(blocks.flatMap((block) => block.pageNumbers || []))
+          };
+        })
+        .filter((section) =>
+          section.heading &&
+          section.blocks.some((block) => hasRenderableBlock(block))
+        )
+    : [];
 
-const coverageSection = buildCoverageAuditSection(semanticModel, sections.length + 1);
+  sections = materializeImageBlocksFromSourcePages({
+    semanticModel,
+    sourcePdf,
+    sections
+  });
 
-if (coverageSection) {
-  sections.push(coverageSection);
-}
+  if (!sections.length) {
+    throw new Error("AI reconstruction did not return any renderable sections.");
+  }
 
-sections = materializeImageBlocksFromSourcePages({
-  semanticModel,
-  sourcePdf,
-  sections
-});
-                                                                                                                    
-return {
+  return {
     sourceFileName: sourcePdf.fileName,
     title: buildSourceLockedTitle({ semanticModel, sourcePdf }),
     pageCount: sourcePdf.pageCount,
@@ -1371,8 +1422,8 @@ return {
     sourceSectionCount: sections.length,
     factsDetected: summaryRows.filter((row) => row.value && row.value !== fallbackValue).length,
     semanticModel,
-   coverageAudit: semanticModel?.coverageAudit || null,
-   aiWarnings: Array.isArray(semanticModel?.warnings) ? semanticModel.warnings : []
+    coverageAudit: semanticModel?.coverageAudit || null,
+    aiWarnings: Array.isArray(semanticModel?.warnings) ? semanticModel.warnings : []
   };
 }
 
@@ -1390,89 +1441,73 @@ async function processDocuments() {
   resetOutputOnly();
 
   try {
-    setStatus("Loading Firebase template controller...");
-    state.templateController = await loadTemplateController();
-    console.log("Firebase Template Controller:", state.templateController);
+    setStatus("Reading sample/template style reference...");
 
-    setStatus("Reading sample/template structure...");
-    const templatePdf = await extractPdf(state.templateFile, { collectVisuals: false });
-    const templateContract = buildTemplateContract(templatePdf);
-    validateTemplateContract(templateContract);
-    state.templateContract = templateContract;
+    const templatePdf = await extractPdf(state.templateFile, {
+      collectVisuals: false,
+      collectPageImages: false
+    });
 
-const documents = [];
+    const templateStyleProfile = buildTemplateStyleProfile(templatePdf);
+    state.templateStyleProfile = templateStyleProfile;
 
-for (let i = 0; i < state.sourceFiles.length; i++) {
-  const file = state.sourceFiles[i];
-  setStatus(`Processing ${file.name} (${i + 1} of ${state.sourceFiles.length})...`);
+    const documents = [];
 
-const sourcePdf = await extractPdf(file, {
-  collectVisuals: isVisualCaptureEnabled(),
-  collectPageImages: true
-});
-  
-  setStatus(`Running AI semantic mapping for ${file.name}...`);
+    for (let i = 0; i < state.sourceFiles.length; i++) {
+      const file = state.sourceFiles[i];
 
-  let semanticModel = null;
+      setStatus(`Reading source document ${file.name} (${i + 1} of ${state.sourceFiles.length})...`);
 
-  try {
-semanticModel = await runSecondBrain({
-  fileName: file.name,
-  sourcePdf,
-  templateContract
-});
+      const sourcePdf = await extractPdf(file, {
+        collectVisuals: isVisualCaptureEnabled(),
+        collectPageImages: true
+      });
 
-    console.log("AI Semantic Model for", file.name, semanticModel);
-  } catch (semanticError) {
-    console.warn("AI semantic mapping failed. Falling back to JavaScript formatter.", semanticError);
-  }
+      setStatus(`Creating rough source import and running AI reconstruction for ${file.name}...`);
 
-let documentModel = null;
+      const semanticModel = await runFlexibleReconstructionBrain({
+        fileName: file.name,
+        sourcePdf,
+        templateStyleProfile
+      });
 
-if (isUsableSemanticModel(semanticModel)) {
-  const sourceProfile = buildSourceProfile(sourcePdf);
+      if (!isUsableSemanticModel(semanticModel)) {
+        throw new Error(`AI reconstruction returned a weak or unusable model for ${file.name}.`);
+      }
 
-  documentModel = buildDocumentModelFromSemanticModel({
-    semanticModel,
-    sourcePdf,
-    templateContract,
-    sourceProfile
-  });
+      const documentModel = buildDocumentModelFromSemanticModel({
+        semanticModel,
+        sourcePdf
+      });
 
-  console.log("Rendering from AI semantic model with summary repair for", file.name, documentModel);
-} else {
-  console.warn("AI semantic model was missing or too weak. Falling back to JavaScript formatter.", {
-    fileName: file.name,
-    semanticModel
-  });
+      console.log("Rendering from flexible AI reconstruction model for", file.name, documentModel);
 
-  const sourceProfile = buildSourceProfile(sourcePdf);
-  documentModel = await buildDocumentModel({
-    sourcePdf,
-    sourceProfile,
-    templateContract
-  });
+      documents.push(documentModel);
+    }
 
-  console.log("Rendering from JavaScript fallback for", file.name, documentModel);
-}
+    state.documents = documents;
 
-documents.push(documentModel);
-}
+    state.auditLog = {
+      generatedAt: new Date().toISOString(),
+      pipelineVersion: "source_first_flexible_reconstruction_v1",
+      templateStyleProfile,
+      documents
+    };
 
-state.documents = documents;
-state.auditLog = buildAuditLog(templateContract, documents);
+    renderPreview(documents);
+    renderDetectedDetails(templateStyleProfile, documents);
+    renderVisualPreview(documents);
 
-renderPreview(documents);
-renderDetectedDetails(templateContract, documents);
-renderVisualPreview(documents);
+    els.exportPdfBtn.disabled = false;
+    els.exportAuditBtn.disabled = false;
 
-els.exportPdfBtn.disabled = false;
-els.exportAuditBtn.disabled = false;
-
-setStatus("Processing complete. Review the preview before exporting.", "success");
+    setStatus("Processing complete. Review the preview before exporting.", "success");
   } catch (error) {
     console.error(error);
     setStatus(`Failed: ${error.message}`, "error");
+
+    els.exportPdfBtn.disabled = true;
+    els.exportAuditBtn.disabled = true;
   }
 }
 
@@ -1516,16 +1551,16 @@ if (collectPageImages || (collectVisuals && boolRule(getDetectionRules().detectV
 }
 
 if (collectPageImages && renderedPage) {
-  pageImage = {
-    pageNumber,
-    imageDataUrl: renderedPage.dataUrl,
-    width: renderedPage.width,
-    height: renderedPage.height,
-    scale: renderedPage.scale,
-    mimeType: renderedPage.mimeType || "image/jpeg"
-  };
-}
-
+pageImage = {
+  pageNumber,
+  imageDataUrl: renderedPage.dataUrl,
+  width: renderedPage.width,
+  height: renderedPage.height,
+  scale: renderedPage.scale,
+  imageMimeType: renderedPage.mimeType || "image/jpeg",
+  mimeType: renderedPage.mimeType || "image/jpeg"
+};
+  
 if (collectVisuals && boolRule(getDetectionRules().detectVisuals, false) && renderedPage) {
   visualCandidates = detectVisualCandidates({
     pageNumber,
@@ -1703,15 +1738,15 @@ function detectVisualCandidates({ pageNumber, viewport, lines, renderedPage }) {
 
   const hasSparseText = textCoverageRatio < rejectRatio;
   const hasLikelyFigureKeywords = lines.some((line) =>
-    /visual reference|diagram|image|photo|figure|map|berth plan|terminal plan|layout|plan|chart/i.test(line.text)
-  );
+  /visual reference|diagram|image|photo|figure|map|layout|plan|chart|screenshot|illustration|drawing|graph|table/i.test(line.text)
+);
 
   if (rejectTextHeavyCrops && textCoverageRatio > rejectRatio && !hasLikelyFigureKeywords) return [];
   if (!hasSparseText && !hasLikelyFigureKeywords) return [];
 
   const cueLine = bodyLines.find((line) =>
-    /visual reference|diagram|image|photo|figure|map|layout|berth plan|terminal plan|chart/i.test(line.text)
-  );
+  /visual reference|diagram|image|photo|figure|map|layout|plan|chart|screenshot|illustration|drawing|graph|table/i.test(line.text)
+);
 
   let cropTop = cueLine ? cueLine.bottom + 6 : 70;
   let cropBottom = viewport.height - 65;
@@ -1790,174 +1825,105 @@ async function cropRenderedVisual(visual) {
 }
 
 /* =========================================================
-   TEMPLATE CONTRACT
+   TEMPLATE STYLE PROFILE
    ========================================================= */
 
-function buildTemplateContract(templatePdf) {
+function buildTemplateStyleProfile(templatePdf) {
   const title = inferDocumentTitle(templatePdf.fullText, templatePdf.fileName);
   const headings = detectStructuredHeadings(templatePdf.pages, title);
 
-  let sections = headings
-    .map((heading, index) => ({
-      id: `template-section-${index + 1}`,
-      order: index + 1,
-      heading: cleanHeading(heading.text),
-      sourcePageNumber: heading.pageNumber,
-      confidence: heading.confidence
-    }))
-    .filter((section) => section.heading)
-    .filter((section) => !isBlockedText(section.heading))
-    .filter((section) => !isDuplicateTitle(section.heading, title))
-    .filter((section) => !isBadTemplateHeading(section.heading));
+  const sectionHeadings = headings
+    .map((heading) => cleanHeading(heading.text || ""))
+    .filter(Boolean)
+    .filter((heading) => !isBlockedText(heading))
+    .filter((heading) => !isDuplicateTitle(heading, title))
+    .slice(0, CONFIG.structure.maxTemplateSections);
 
-  sections = dedupeSections(sections).slice(0, CONFIG.structure.maxTemplateSections);
+  const numberedSections = sectionHeadings.filter((heading) =>
+    /^\d+(\.\d+)*[.)]?\s+/.test(heading)
+  ).length;
 
-  const headerFields = detectTemplateHeaderFields(templatePdf, sections);
+  const hasNumberedSections =
+    sectionHeadings.length > 0 &&
+    numberedSections / sectionHeadings.length >= 0.35;
+
+  const sampleText = String(templatePdf.fullText || "");
+  const lowerSample = comparable(sampleText);
 
   return {
-    fileName: templatePdf.fileName,
-    pageCount: templatePdf.pageCount,
-    title,
-    headerFields,
-    sections
+    profileVersion: "template-style-profile-v1",
+    templateFileName: templatePdf.fileName || "",
+    referenceTitle: title || "",
+    role: "style_reference_only",
+
+    sectionStyle: {
+      usesNumberedSections: hasNumberedSections,
+      detectedSectionHeadings: sectionHeadings,
+      sectionCount: sectionHeadings.length
+    },
+
+    summaryStyle: {
+      appearsToUseSummaryTable: detectLikelySummaryTable(templatePdf),
+      note: "Use as a style signal only. Do not force the source into these fields."
+    },
+
+    contentStyle: {
+      likelyUsesTables: detectLikelyTables(templatePdf),
+      likelyUsesLists: detectLikelyLists(templatePdf),
+      density: sampleText.length > 6000 ? "detailed" : "compact",
+      tone: "formal-clean-document"
+    },
+
+    imageStyle: {
+      shouldPreserveImages: true,
+      shouldCaptionImages: true
+    },
+
+    visualCleanliness: {
+      removeSystemNotes: true,
+      removeTemplateSourceLabels: true,
+      avoidDebugLanguage: true
+    },
+
+    instruction:
+      "This template is only a style and presentation reference. Do not copy its facts. Do not force source content into the exact same fields or section names."
   };
 }
 
-function isBadTemplateHeading(heading) {
-  const text = normalizeLine(heading);
-  const clean = comparable(text);
+function detectLikelySummaryTable(templatePdf) {
+  const firstPages = (templatePdf.pages || [])
+    .slice(0, 2)
+    .flatMap((page) => page.lines || []);
 
-  if (!text || !clean) return true;
+  const shortLabelLikeLines = firstPages.filter((line) => {
+    const text = normalizeLine(line.text || "");
+    if (!text) return false;
+    if (text.length > 90) return false;
+    if (/:/.test(text)) return true;
+    if (line.itemCount >= 2 && text.split(/\s+/).length <= 10) return true;
+    return false;
+  });
 
-  // Prevent summary table rows from becoming output section headings.
-  if (/\bnot available\b/i.test(text)) return true;
-
-  // Prevent merged header-table labels from becoming fake sections.
-  if (
-    /\b(publications|charts|berth|terminal|cargo|agent|vhf|country|port name|vessel name)\b/i.test(text) &&
-    /\bnot available\b/i.test(text)
-  ) {
-    return true;
-  }
-
-  // Reject headings that are too table-like.
-  const notAvailableCount = (text.match(/not available/gi) || []).length;
-  if (notAvailableCount >= 1) return true;
-
-  return false;
+  return shortLabelLikeLines.length >= 4;
 }
 
-function validateTemplateContract(contract) {
-  const detectionRules = getDetectionRules();
-  const outputRules = getOutputRules();
+function detectLikelyTables(templatePdf) {
+  const lines = (templatePdf.pages || []).flatMap((page) => page.lines || []);
 
-  const minimumSections = detectionRules.minimumSections ?? 2;
-  const minimumHeaderFields = detectionRules.minimumHeaderFields ?? 2;
-  const showSummaryTable = boolRule(outputRules.showSummaryTable, true);
-
-  if (contract.sections.length < minimumSections) {
-    throw new Error(
-      `Template is too weak. Detected ${contract.sections.length} section(s), but Firebase requires at least ${minimumSections}. Upload a clearer sample/template PDF.`
-    );
-  }
-
-  if (showSummaryTable && contract.headerFields.length < minimumHeaderFields) {
-    throw new Error(
-      `Template header table is too weak. Detected ${contract.headerFields.length} header field(s), but Firebase requires at least ${minimumHeaderFields}. Upload a sample with a clearer Key Information/header table.`
-    );
-  }
+  return lines.some((line) => {
+    const text = normalizeLine(line.text || "");
+    const tokenCount = text.split(/\s+/).filter(Boolean).length;
+    const numericCount = (text.match(/\d/g) || []).length;
+    return text.includes("|") || (line.itemCount >= 4 && tokenCount >= 5 && numericCount >= 2);
+  });
 }
 
-function detectTemplateHeaderFields(templatePdf, sections) {
-  if (!boolRule(getDetectionRules().detectHeaderTable, true)) return [];
-
-  const keyInfoSection = sections.find((section) =>
-    /key information|summary|basic details|main details|header/i.test(section.heading)
+function detectLikelyLists(templatePdf) {
+  return /(^|\n)\s*(?:[-•*–—]|\(?[a-zA-Z0-9]{1,4}\)?[.)])\s+/m.test(
+    templatePdf.fullText || ""
   );
-
-  const maxPage = Math.min(templatePdf.pageCount, keyInfoSection ? keyInfoSection.sourcePageNumber + 1 : 2);
-  const sampleText = templatePdf.pages
-    .filter((page) => page.pageNumber <= maxPage)
-    .map((page) => page.text)
-    .join("\n");
-
-  const found = [];
-  const seen = new Set();
-
-  for (const label of COMMON_HEADER_LABELS) {
-    if (containsLooseLabel(sampleText, label)) {
-      const key = comparable(label).replace(/\s+/g, "_");
-      if (!seen.has(key)) {
-        seen.add(key);
-        found.push({
-          id: `field-${found.length + 1}`,
-          key,
-          label,
-          aliases: buildAliasesForLabel(label),
-          order: found.length + 1
-        });
-      }
-    }
-  }
-
-  const colonLabels = sampleText.match(/^.{2,60}:/gm) || [];
-  for (const item of colonLabels) {
-    const label = cleanHeading(item.replace(/:$/, ""));
-    const key = comparable(label).replace(/\s+/g, "_");
-    if (!label || isBlockedText(label) || looksLikeBodySentence(label) || seen.has(key)) continue;
-
-    seen.add(key);
-    found.push({
-      id: `field-${found.length + 1}`,
-      key,
-      label,
-      aliases: buildAliasesForLabel(label),
-      order: found.length + 1
-    });
-  }
-
-  return found;
 }
 
-function containsLooseLabel(text, label) {
-  const source = comparable(text);
-  const target = comparable(label);
-  if (source.includes(target)) return true;
-  return weightedTokenOverlap(tokenize(label), tokenize(text)) > 0.84;
-}
-
-function buildAliasesForLabel(label) {
-  const lower = comparable(label);
-  const aliases = new Set([label]);
-
-  const groups = [
-    ["vessel", ["vessel", "vessel name", "ship", "mv", "m/v"]],
-    ["port", ["port", "port name", "location", "puerto"]],
-    ["country", ["country"]],
-    ["unlocode", ["unlocode", "unctad", "un/locode", "code"]],
-    ["latitude longitude position", ["lat", "long", "latitude", "longitude", "position"]],
-    ["time zone", ["time zone", "timezone", "gmt", "utc", "local time", "smt"]],
-    ["port stay date", ["date", "date of arrival", "arrival", "eta", "etb", "etd", "port stay"]],
-    ["berth pier terminal", ["berth", "pier", "terminal", "jetty", "berth name"]],
-    ["cargo operations rate", ["loading rate", "discharging rate", "cargo operation", "cargo operations", "rate", "shore scale"]],
-    ["cargo", ["cargo", "commodity"]],
-    ["depth draft channel", ["depth", "draft", "draught", "channel", "fairway", "depth at anchorage"]],
-    ["density", ["density", "water density", "salinity"]],
-    ["tidal range", ["tidal range", "tide", "average tide"]],
-    ["security level", ["security level", "security", "isps", "level"]],
-    ["vhf communication", ["vhf", "vhf channel", "channel", "channels", "communication", "radio"]],
-    ["agent contact", ["agent", "agents", "agency", "contact", "phone", "email", "mobile"]],
-    ["publications charts", ["publication", "publications", "chart", "charts", "enc", "enp", "alrs"]]
-  ];
-
-  for (const [needle, values] of groups) {
-    if (lower.includes(needle) || needle.includes(lower)) {
-      values.forEach((value) => aliases.add(value));
-    }
-  }
-
-  return Array.from(aliases);
-}
 
 function detectStructuredHeadings(pages, title) {
   const allLines = pages.flatMap((page) =>
@@ -2261,94 +2227,52 @@ function inferImplicitFacts(fullText, fileName) {
   return facts;
 }
 
-function inferFileNameFacts(fileTitle) {
-  const cleaned = cleanHeading(fileTitle)
-    .replace(/\bport information\b/gi, "")
-    .replace(/\bupdated\b/gi, "")
+const fileNameEvidence = buildGenericFileNameEvidence(fileTitle);
+
+if (fileNameEvidence.cleanedTitle) {
+  facts.push(
+    makeFact(
+      "File Name Evidence",
+      fileNameEvidence.cleanedTitle,
+      fileTitle,
+      0.25
+    )
+  );
+}
+
+if (fileNameEvidence.possibleYear) {
+  facts.push(
+    makeFact(
+      "Possible Year",
+      fileNameEvidence.possibleYear,
+      fileTitle,
+      0.3
+    )
+  );
+}
+
+  function buildGenericFileNameEvidence(fileTitle) {
+  const cleanedTitle = cleanHeading(fileTitle || "")
+    .replace(/\.[a-z0-9]{2,6}$/i, "")
+    .replace(/[_-]+/g, " ")
     .replace(/\(\d+\)/g, "")
     .replace(/\bcopy\b/gi, "")
+    .replace(/\bupdated\b/gi, "")
     .replace(/\s+/g, " ")
     .trim();
 
-  const yearMatch = cleaned.match(/\b(20\d{2}|19\d{2})\b/);
-  const year = yearMatch ? yearMatch[1] : "";
-
-  const withoutYear = cleaned
-    .replace(/\b(20\d{2}|19\d{2})\b/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-
-  const countries = [
-    "united states",
-    "south africa",
-    "united arab emirates",
-    "argentina",
-    "australia",
-    "brazil",
-    "canada",
-    "chile",
-    "china",
-    "colombia",
-    "india",
-    "indonesia",
-    "japan",
-    "korea",
-    "mexico",
-    "panama",
-    "peru",
-    "singapore",
-    "spain",
-    "uae",
-    "uruguay",
-    "usa",
-    "venezuela",
-    "vietnam"
-  ].sort((a, b) => b.length - a.length);
-
-  const country = countries.find((item) =>
-    comparable(withoutYear).includes(comparable(item))
-  );
-
-  if (!country) {
-    return {
-      vessel: "",
-      port: "",
-      country: "",
-      year
-    };
-  }
-
-  const countryPattern = new RegExp(`\\b${escapeRegExp(country).replace(/\\s+/g, "\\\\s+")}\\b`, "i");
-  const match = withoutYear.match(countryPattern);
-
-  if (!match) {
-    return {
-      vessel: "",
-      port: "",
-      country: titleCase(country),
-      year
-    };
-  }
-
-  const portRaw = withoutYear.slice(0, match.index).trim();
-  const vesselRaw = withoutYear.slice(match.index + match[0].length).trim();
+  const yearMatch = cleanedTitle.match(/\b(20\d{2}|19\d{2})\b/);
 
   return {
-    port: cleanHeading(portRaw),
-    country: titleCase(country),
-    vessel: normalizeVesselName(vesselRaw),
-    year
+    cleanedTitle,
+    possibleYear: yearMatch ? yearMatch[1] : "",
+    tokens: cleanedTitle
+      .split(/\s+/)
+      .map((item) => item.trim())
+      .filter(Boolean)
   };
 }
 
-function normalizeVesselName(value) {
-  return cleanHeading(value)
-    .replace(/\bmv\b/gi, "MV")
-    .replace(/\bm\/v\b/gi, "M/V")
-    .replace(/\bcs\b/gi, "CS")
-    .replace(/\s+/g, " ")
-    .trim();
-}
 
 function titleCase(value) {
   return String(value || "")
