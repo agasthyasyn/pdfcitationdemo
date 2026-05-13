@@ -1465,6 +1465,7 @@ function buildDocumentModelFromSemanticModel({ semanticModel, sourcePdf }) {
     sourceSectionCount: sections.length,
     factsDetected: summaryRows.filter((row) => row.value && row.value !== fallbackValue).length,
     semanticModel,
+    templateStyleProfile: semanticModel.templateStyleProfile || state.templateStyleProfile || null,
     coverageAudit: semanticModel?.coverageAudit || null,
     aiWarnings: Array.isArray(semanticModel?.warnings) ? semanticModel.warnings : []
   };
@@ -1966,6 +1967,21 @@ function buildTemplateStyleProfile(templatePdf) {
     instruction:
       "This template is only a style and presentation reference. Do not copy its facts. Do not force source content into the exact same fields or section names."
   };
+}
+
+layoutGuidance: {
+  titlePlacement: "top",
+  titleWeight: "bold",
+  headingTreatment: hasNumberedSections ? "numbered_bold" : "bold_section_heading",
+  summaryTreatment: detectLikelySummaryTable(templatePdf)
+    ? "key_value_table"
+    : "key_value_lines",
+  sectionSpacing: sampleText.length > 6000 ? "compact" : "comfortable",
+  tableTreatment: detectLikelyTables(templatePdf)
+    ? "structured_table"
+    : "simple_rows",
+  imageTreatment: "captioned_inline",
+  pageStyle: "clean_business_document"
 }
 
 function detectLikelySummaryTable(templatePdf) {
@@ -3929,6 +3945,11 @@ async function generatePdf(documents) {
   }
 
   for (const doc of documents || []) {
+const styleProfile = doc.templateStyleProfile || {};
+const layoutGuidance = styleProfile.layoutGuidance || {};
+const summaryTreatment = layoutGuidance.summaryTreatment || "key_value_lines";
+const sectionSpacing = layoutGuidance.sectionSpacing || "comfortable";
+const tableTreatment = layoutGuidance.tableTreatment || "simple_rows";
     newPage();
 
     drawWrappedParagraph(cleanDocumentTitle(doc.title || "Document"), {
@@ -3937,22 +3958,29 @@ async function generatePdf(documents) {
       gap: 12
     });
 
-    if (Array.isArray(doc.summaryRows) && doc.summaryRows.length) {
-      drawWrappedParagraph("Key Information", {
-        bold: true,
-        size: layout.headingSize,
-        gap: 8
+if (Array.isArray(doc.summaryRows) && doc.summaryRows.length) {
+  drawWrappedParagraph("Key Information", {
+    bold: true,
+    size: layout.headingSize,
+    gap: 8
+  });
+
+  if (summaryTreatment === "key_value_table") {
+    for (const row of doc.summaryRows) {
+      drawWrappedParagraph(`${row.label} | ${row.value || getFallbackValue()}`, {
+        gap: 3
       });
-
-      for (const row of doc.summaryRows) {
-        drawWrappedParagraph(`${row.label}: ${row.value || getFallbackValue()}`, {
-          gap: 3
-        });
-      }
-
-      cursorY -= 8;
     }
+  } else {
+    for (const row of doc.summaryRows) {
+      drawWrappedParagraph(`${row.label}: ${row.value || getFallbackValue()}`, {
+        gap: 3
+      });
+    }
+  }
 
+  cursorY -= 8;
+}
     for (const section of doc.sections || []) {
       ensureSpace(55);
 
