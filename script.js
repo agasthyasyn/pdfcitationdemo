@@ -210,10 +210,7 @@ async function callSemanticMapper(payload) {
     );
   }
 
-  if (!response.ok || !data.ok) {
-    console.error("Semantic mapper failed:", data);
-    throw new Error(data?.error?.message || data?.error || "Semantic mapper failed.");
-  }
+if (!response.ok || !data.ok) {
 
   if (!data.parsedJson || typeof data.parsedJson !== "object") {
     console.error("Semantic mapper returned invalid JSON output:", data);
