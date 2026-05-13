@@ -4018,6 +4018,26 @@ for (const block of section.blocks) {
   return cleanBusinessContent(lines.join("\n"));
 }
 
+function sanitizePdfText(value) {
+  return String(value || "")
+    .replace(/\u00A0/g, " ")
+    .replace(/[\u2018\u2019\u201B\u2032]/g, "'")
+    .replace(/[\u201C\u201D\u2033]/g, '"')
+    .replace(/[\u2010\u2011\u2012\u2013\u2014\u2212]/g, "-")
+    .replace(/\u2026/g, "...")
+    .replace(/[•·●]/g, "-")
+    .replace(/[➢→⇒]/g, ">")
+    .replace(/[≤]/g, "<=")
+    .replace(/[≥]/g, ">=")
+    .replace(/[×]/g, "x")
+    .replace(/[÷]/g, "/")
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^\x09\x0A\x0D\x20-\x7E]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 async function generatePdf(documents) {
   const pdfDoc = await PDFDocument.create();
 
@@ -4052,40 +4072,45 @@ async function generatePdf(documents) {
     }
   }
 
-  function drawTextLine(text, x, y, options = {}) {
-    page.drawText(String(text || ""), {
-      x,
-      y,
-      size: options.size || layout.bodySize,
-      font: options.bold ? boldFont : regularFont,
-      color: options.color || rgb(0.08, 0.08, 0.08)
-    });
+function drawTextLine(text, x, y, options = {}) {
+  const safeText = sanitizePdfText(text);
+  if (!safeText) return;
+  page.drawText(safeText, {
+    x,
+    y,
+    size: options.size || layout.bodySize,
+    font: options.bold ? boldFont : regularFont,
+    color: options.color || rgb(0.08, 0.08, 0.08)
+  });
+}
+
+function wrapText(text, font, size, maxWidth) {
+  const words = sanitizePdfText(text).split(/\s+/).filter(Boolean);
+  const lines = [];
+  let line = "";
+
+  for (const word of words) {
+    const testLine = line ? `${line} ${word}` : word;
+    const width = font.widthOfTextAtSize(testLine, size);
+
+    if (width > maxWidth && line) {
+      lines.push(line);
+      line = word;
+    } else {
+      line = testLine;
+    }
   }
 
-  function wrapText(text, font, size, maxWidth) {
-    const words = String(text || "").split(/\s+/).filter(Boolean);
-    const lines = [];
-    let line = "";
-
-    for (const word of words) {
-      const testLine = line ? `${line} ${word}` : word;
-      const width = font.widthOfTextAtSize(testLine, size);
-
-      if (width > maxWidth && line) {
-        lines.push(line);
-        line = word;
-      } else {
-        line = testLine;
-      }
-    }
-
+  if (line) lines.push(line);
+  return lines;
+}
     if (line) lines.push(line);
     return lines;
   }
 
-  function drawWrappedParagraph(text, options = {}) {
-    const clean = normalizeLine(text || "");
-    if (!clean) return;
+function drawWrappedParagraph(text, options = {}) {
+  const clean = sanitizePdfText(normalizeLine(text || ""));
+  if (!clean) return;
 
     const font = options.bold ? boldFont : regularFont;
     const size = options.size || layout.bodySize;
