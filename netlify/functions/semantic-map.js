@@ -452,12 +452,11 @@ exports.handler = async function (event) {
     const mode = payload.mode || "reconstruct_document";
 
     if (!["vision_page", "reconstruct_document"].includes(mode)) {
-    return jsonResponse(400, headers, {
-    ok: false,
-    error: `Unsupported semantic-map mode: ${mode}`
-  });
-}
-
+      return jsonResponse(400, headers, {
+        ok: false,
+        error: `Unsupported semantic-map mode: ${mode}`
+      });
+    }
     const prompt = buildPrompt(payload);
 
     const response = await fetch("https://api.openai.com/v1/responses", {
@@ -473,7 +472,8 @@ body: JSON.stringify({
   max_output_tokens: getMaxOutputTokens(mode),
   text: getStructuredTextFormat(mode),
   input: buildOpenAIInput(payload, prompt)
-})
+  })
+}); 
     const data = await response.json();
 
     if (!response.ok) {
