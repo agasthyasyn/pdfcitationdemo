@@ -1,6 +1,10 @@
 function extractOpenAIText(data) {
   if (!data) return "";
 
+  if (data.output_parsed && typeof data.output_parsed === "object") {
+  return JSON.stringify(data.output_parsed);
+}
+
   if (typeof data.output_text === "string" && data.output_text.trim()) {
     return data.output_text.trim();
   }
@@ -369,46 +373,44 @@ function buildOpenAIInput(payload, prompt) {
   ];
 }
 
-function getStructuredTextFormat(mode) {
-  if (mode === "vision_page") {
-    return {
-      format: {
-        type: "json_schema",
-        name: "vision_page_result",
-        strict: false,
-        schema: {
-          type: "object",
-          additionalProperties: true
-        }
-      }
-    };
-  }
-
-  if (mode === "reconstruct_document") {
-    return {
-      format: {
-        type: "json_schema",
-        name: "reconstruct_document_result",
-        strict: false,
-        schema: {
-          type: "object",
-          additionalProperties: true
-        }
-      }
-    };
-  }
-
+function getResponseTextFormat() {
   return {
     format: {
-      type: "json_schema",
-      name: "generic_json_result",
-      strict: false,
-      schema: {
-        type: "object",
-        additionalProperties: true
-      }
+      type: "json_object"
     }
   };
+}
+
+function extractApiErrorMessage(data) {
+  if (!data) return "Unknown API error.";
+
+  if (typeof data === "string") return data;
+
+  if (typeof data?.error === "string") return data.error;
+
+  if (typeof data?.error?.message === "string") {
+    return data.error.message;
+  }
+
+  if (typeof data?.error?.error?.message === "string") {
+    return data.error.error.message;
+  }
+
+  if (typeof data?.message === "string") return data.message;
+
+  try {
+    return JSON.stringify(data.error || data).slice(0, 1600);
+  } catch {
+    return "Unknown API error object.";
+  }
+}
+
+function safeJsonPreview(value, maxChars = 1600) {
+  try {
+    return JSON.stringify(value).slice(0, maxChars);
+  } catch {
+    return String(value || "").slice(0, maxChars);
+  }
 }
 
 exports.handler = async function (event) {
@@ -459,31 +461,53 @@ exports.handler = async function (event) {
     }
     const prompt = buildPrompt(payload);
 
-    const response = await fetch("https://api.openai.com/v1/responses", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-        "Content-Type": "application/json"
-      },
-      
-body: JSON.stringify({
-  model: "gpt-5.4-mini",
+    const requestBody = {
+  model: process.env.OPENAI_MODEL || "gpt-4o-mini",
   store: false,
   max_output_tokens: getMaxOutputTokens(mode),
-  text: getStructuredTextFormat(mode),
+  text: getResponseTextFormat(),
   input: buildOpenAIInput(payload, prompt)
-  })
-}); 
-    const data = await response.json();
+};
 
-    if (!response.ok) {
-      return jsonResponse(response.status, headers, {
-        ok: false,
-        mode,
-        error: data
-      });
-    }
+const response = await fetch("https://api.openai.com/v1/responses", {
+  method: "POST",
+  headers: {
+    Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+    "Content-Type": "application/json"
+  },
+  body: JSON.stringify(requestBody)
+});
 
+let data = null;
+
+try {
+  data = await response.json();
+} catch (jsonError) {
+  return jsonResponse(response.status || 502, headers, {
+    ok: false,
+    mode,
+    error: "OpenAI returned a non-JSON HTTP response.",
+    details: jsonError.message
+  });
+}
+
+if (!response.ok) {
+  const apiError = extractApiErrorMessage(data);
+
+  console.error("OpenAI API request failed", {
+    status: response.status,
+    mode,
+    error: apiError,
+    rawError: safeJsonPreview(data)
+  });
+
+  return jsonResponse(response.status, headers, {
+    ok: false,
+    mode,
+    error: apiError,
+    rawError: data?.error || data
+  });
+}
     const outputText = extractOpenAIText(data);
     const parsedJson = parseJsonObject(outputText);
 
