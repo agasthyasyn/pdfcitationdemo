@@ -1396,6 +1396,300 @@ function materializeImageBlocksFromSourcePages({ semanticModel, sourcePdf, secti
 
   return sections;
 }
+
+/* =========================================================
+   SOURCE PRESERVATION GUARD
+   Purpose:
+   - AI may format and reorganize.
+   - AI must not be trusted to preserve everything.
+   - JS checks source import vs final document.
+   - Missing source details are appended back automatically.
+   ========================================================= */
+
+function normalizeForCoverage(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[\u2018\u2019]/g, "'")
+    .replace(/[\u201c\u201d]/g, '"')
+    .replace(/[^a-z0-9@.+/%-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function coverageTokens(value) {
+  const stopWords = new Set([
+    "the", "and", "for", "with", "from", "that", "this", "are", "was", "were",
+    "has", "have", "had", "not", "but", "can", "will", "shall", "into", "onto",
+    "page", "source", "document", "details", "information"
+  ]);
+
+  return normalizeForCoverage(value)
+    .split(/\s+/)
+    .filter((token) => token.length >= 3)
+    .filter((token) => !stopWords.has(token));
+}
+
+function sourceCoverageRatio(sourceText, finalText) {
+  const sourceTokens = Array.from(new Set(coverageTokens(sourceText)));
+  const finalTokens = new Set(coverageTokens(finalText));
+
+  if (!sourceTokens.length) return 1;
+
+  let matched = 0;
+
+  for (const token of sourceTokens) {
+    if (finalTokens.has(token)) matched++;
+  }
+
+  return matched / sourceTokens.length;
+}
+
+function isUsefulPreservationText(text) {
+  const clean = normalizeLine(text || "");
+  if (!clean) return false;
+  if (clean.length < 35) return false;
+
+  if (
+    /\b(formatted document|template used|generated on|generated at|audit note|system note|rough import|source import)\b/i.test(clean)
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
+function finalDocumentSearchText(sections) {
+  const parts = [];
+
+  for (const section of sections || []) {
+    parts.push(section.heading || "");
+
+    for (const block of section.blocks || []) {
+      parts.push(block.text || "");
+      parts.push(block.caption || "");
+
+      if (Array.isArray(block.paragraphs)) {
+        parts.push(...block.paragraphs);
+      }
+
+      if (Array.isArray(block.items)) {
+        parts.push(...block.items);
+      }
+
+      if (Array.isArray(block.headers)) {
+        parts.push(...block.headers);
+      }
+
+      if (Array.isArray(block.rows)) {
+        for (const row of block.rows) {
+          if (Array.isArray(row)) {
+            parts.push(...row);
+          } else {
+            parts.push(String(row || ""));
+          }
+        }
+      }
+    }
+  }
+
+  return parts.join("\n");
+}
+
+function splitPreservationParagraphs(text, maxChars = 900) {
+  const lines = String(text || "")
+    .split(/\n+/)
+    .map((line) => normalizeLine(line))
+    .filter(Boolean)
+    .filter(isUsefulPreservationText);
+
+  const paragraphs = [];
+  let buffer = "";
+
+  for (const line of lines) {
+    const candidate = buffer ? `${buffer} ${line}` : line;
+
+    if (candidate.length > maxChars && buffer) {
+      paragraphs.push(buffer);
+      buffer = line;
+    } else {
+      buffer = candidate;
+    }
+  }
+
+  if (buffer) paragraphs.push(buffer);
+
+  return paragraphs;
+}
+
+function collectVisionTextFromVisionModel(vision) {
+  if (!vision) return "";
+
+  const parts = [];
+
+  for (const block of vision.textBlocks || []) {
+    if (block.text) parts.push(block.text);
+  }
+
+  for (const list of vision.lists || []) {
+    if (list.heading) parts.push(list.heading);
+    if (Array.isArray(list.items)) parts.push(...list.items);
+  }
+
+  for (const table of vision.tables || []) {
+    if (table.heading) parts.push(table.heading);
+    if (Array.isArray(table.headers)) parts.push(table.headers.join(" | "));
+
+    for (const row of table.rows || []) {
+      if (Array.isArray(row)) {
+        parts.push(row.join(" | "));
+      } else {
+        parts.push(String(row || ""));
+      }
+    }
+  }
+
+  for (const visual of vision.visualBlocks || []) {
+    if (visual.caption) parts.push(visual.caption);
+    if (visual.description) parts.push(visual.description);
+  }
+
+  return parts
+    .map((item) => normalizeLine(item))
+    .filter(Boolean)
+    .join("\n");
+}
+
+function collectVisionTextByPage(roughSourceImport) {
+  const map = new Map();
+
+  function add(pageNumber, text) {
+    if (!pageNumber || !isUsefulPreservationText(text)) return;
+
+    const existing = map.get(pageNumber) || "";
+    map.set(pageNumber, `${existing}\n${text}`.trim());
+  }
+
+  for (const page of roughSourceImport?.buckets?.content || []) {
+    add(page.pageNumber, collectVisionTextFromVisionModel(page.vision));
+  }
+
+  for (const image of roughSourceImport?.buckets?.images || []) {
+    add(image.sourcePage, collectVisionTextFromVisionModel(image.vision));
+  }
+
+  return map;
+}
+
+function buildSourcePreservationSections({ sections, semanticModel }) {
+  const roughSourceImport = semanticModel?.roughSourceImport;
+
+  if (!roughSourceImport?.buckets) return [];
+
+  const existingFinalText = finalDocumentSearchText(sections);
+  const preservationSections = [];
+
+  const missingRawBlocks = [];
+  const missingVisionBlocks = [];
+
+  for (const page of roughSourceImport.buckets.content || []) {
+    const pageNumber = page.pageNumber;
+    const rawText = cleanBusinessContent(page.rawText || "");
+
+    if (!isUsefulPreservationText(rawText)) continue;
+
+    const coverage = sourceCoverageRatio(rawText, existingFinalText);
+
+    if (coverage < 0.58) {
+      const paragraphs = splitPreservationParagraphs(rawText, 850);
+
+      if (paragraphs.length) {
+        missingRawBlocks.push({
+          type: "text",
+          text: paragraphs.join("\n\n"),
+          paragraphs,
+          sourcePage: pageNumber,
+          pageNumber,
+          pageNumbers: [pageNumber],
+          sourceHeading: `Page ${pageNumber} Details`
+        });
+      }
+    }
+  }
+
+  const visionTextByPage = collectVisionTextByPage(roughSourceImport);
+
+  for (const [pageNumber, visionText] of visionTextByPage.entries()) {
+    if (!isUsefulPreservationText(visionText)) continue;
+
+    const coverage = sourceCoverageRatio(visionText, existingFinalText);
+
+    if (coverage < 0.62) {
+      const paragraphs = splitPreservationParagraphs(visionText, 850);
+
+      if (paragraphs.length) {
+        missingVisionBlocks.push({
+          type: "text",
+          text: paragraphs.join("\n\n"),
+          paragraphs,
+          sourcePage: pageNumber,
+          pageNumber,
+          pageNumbers: [pageNumber],
+          sourceHeading: `Visual Details - Page ${pageNumber}`
+        });
+      }
+    }
+  }
+
+  if (missingRawBlocks.length) {
+    preservationSections.push({
+      id: `preserved-source-details-${preservationSections.length + 1}`,
+      order: 900 + preservationSections.length,
+      heading: "Additional Details",
+      blocks: missingRawBlocks,
+      matchedSourceIds: [],
+      score: 1,
+      pageNumbers: uniqueNumbers(
+        missingRawBlocks.flatMap((block) => block.pageNumbers || [])
+      )
+    });
+  }
+
+  if (missingVisionBlocks.length) {
+    preservationSections.push({
+      id: `preserved-visual-details-${preservationSections.length + 1}`,
+      order: 900 + preservationSections.length,
+      heading: "Visual and Screenshot Details",
+      blocks: missingVisionBlocks,
+      matchedSourceIds: [],
+      score: 1,
+      pageNumbers: uniqueNumbers(
+        missingVisionBlocks.flatMap((block) => block.pageNumbers || [])
+      )
+    });
+  }
+
+  return preservationSections;
+}
+
+function enforceSourcePreservation({ sections, semanticModel }) {
+  const preservationSections = buildSourcePreservationSections({
+    sections,
+    semanticModel
+  });
+
+  if (!preservationSections.length) return sections;
+
+  console.warn("Source Preservation Guard added missing details", {
+    addedSections: preservationSections.length,
+    addedBlocks: preservationSections.reduce(
+      (sum, section) => sum + (section.blocks || []).length,
+      0
+    )
+  });
+
+  return [...sections, ...preservationSections];
+}
+
 function buildDocumentModelFromSemanticModel({ semanticModel, sourcePdf }) {
   if (!semanticModel || typeof semanticModel !== "object") {
     throw new Error("AI reconstruction returned an empty or invalid model.");
@@ -1445,15 +1739,20 @@ function buildDocumentModelFromSemanticModel({ semanticModel, sourcePdf }) {
         )
     : [];
 
-  sections = materializeImageBlocksFromSourcePages({
-    semanticModel,
-    sourcePdf,
-    sections
-  });
+sections = materializeImageBlocksFromSourcePages({
+  semanticModel,
+  sourcePdf,
+  sections
+});
 
-  if (!sections.length) {
-    throw new Error("AI reconstruction did not return any renderable sections.");
-  }
+sections = enforceSourcePreservation({
+  sections,
+  semanticModel
+});
+
+if (!sections.length) {
+  throw new Error("AI reconstruction did not return any renderable sections.");
+}
 
   return {
     sourceFileName: sourcePdf.fileName,
