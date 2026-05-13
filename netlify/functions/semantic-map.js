@@ -111,8 +111,8 @@ function buildPagesText(pages) {
 
 function getMaxOutputTokens(mode) {
   if (mode === "vision_page") return 4500;
-  if (mode === "reconstruct_document") return 20000;
-  return 10000;
+  if (mode === "reconstruct_document") return 12000;
+  return 7000;
 }
 
 function buildPrompt(payload) {
@@ -238,8 +238,9 @@ Important:
 - Do not invent missing values.
 - Do not assume this is a port document.
 - Do not use country lists, vessel lists, port lists, or any domain-specific fixed schema.
-- Preserve source information exhaustively.
-- Do not compress operational, contact, financial, legal, technical, tabular, visual, or instruction-based information into vague summaries.
+- Preserve source information strongly, but keep the JSON valid and structured.
+- Organize the main document content cleanly. Do not create an oversized malformed JSON response.
+- Important details must be represented clearly; any remaining raw details will be checked by the source preservation guard after reconstruction.- Do not compress operational, contact, financial, legal, technical, tabular, visual, or instruction-based information into vague summaries.
 - If the source has contact names, phone numbers, email addresses, locations, quantities, dates, rates, declaration fields, remarks, warnings, or conditions, preserve them explicitly.
 - If the source contains screenshot-based text visible through vision notes, convert that text into normal document content.
 - If the source has more information than the template style can comfortably hold, create additional sections rather than omitting details.
@@ -368,6 +369,48 @@ function buildOpenAIInput(payload, prompt) {
   ];
 }
 
+function getStructuredTextFormat(mode) {
+  if (mode === "vision_page") {
+    return {
+      format: {
+        type: "json_schema",
+        name: "vision_page_result",
+        strict: false,
+        schema: {
+          type: "object",
+          additionalProperties: true
+        }
+      }
+    };
+  }
+
+  if (mode === "reconstruct_document") {
+    return {
+      format: {
+        type: "json_schema",
+        name: "reconstruct_document_result",
+        strict: false,
+        schema: {
+          type: "object",
+          additionalProperties: true
+        }
+      }
+    };
+  }
+
+  return {
+    format: {
+      type: "json_schema",
+      name: "generic_json_result",
+      strict: false,
+      schema: {
+        type: "object",
+        additionalProperties: true
+      }
+    }
+  };
+}
+
 exports.handler = async function (event) {
   const headers = {
     "Access-Control-Allow-Origin": "*",
@@ -415,13 +458,6 @@ exports.handler = async function (event) {
   });
 }
 
-    if ((mode === "identity_summary" || mode === "final_format") && !template.headerFields.length) {
-      return jsonResponse(400, headers, {
-        ok: false,
-        error: "template.headerFields is required."
-      });
-    }
-
     const prompt = buildPrompt(payload);
 
     const response = await fetch("https://api.openai.com/v1/responses", {
@@ -430,14 +466,14 @@ exports.handler = async function (event) {
         Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
         "Content-Type": "application/json"
       },
-      body: JSON.stringify({
-        model: "gpt-5.4-mini",
-        store: false,
-        max_output_tokens: getMaxOutputTokens(mode),
-        input: buildOpenAIInput(payload, prompt)
-      })
-    });
-
+      
+body: JSON.stringify({
+  model: "gpt-5.4-mini",
+  store: false,
+  max_output_tokens: getMaxOutputTokens(mode),
+  text: getStructuredTextFormat(mode),
+  input: buildOpenAIInput(payload, prompt)
+})
     const data = await response.json();
 
     if (!response.ok) {
