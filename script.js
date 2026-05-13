@@ -210,7 +210,22 @@ async function callSemanticMapper(payload) {
     );
   }
 
-if (!response.ok || !data.ok) {
+  if (!response.ok || !data.ok) {
+    console.error("Semantic mapper failed:", data);
+
+    const message =
+      typeof data?.error === "string"
+        ? data.error
+        : typeof data?.error?.message === "string"
+          ? data.error.message
+          : typeof data?.rawError?.message === "string"
+            ? data.rawError.message
+            : data?.rawError
+              ? JSON.stringify(data.rawError).slice(0, 1200)
+              : JSON.stringify(data || {}).slice(0, 1200);
+
+    throw new Error(message || "Semantic mapper failed.");
+  }
 
   if (!data.parsedJson || typeof data.parsedJson !== "object") {
     console.error("Semantic mapper returned invalid JSON output:", data);
