@@ -244,7 +244,8 @@ Important:
 - Do not use country lists, vessel lists, port lists, or any domain-specific fixed schema.
 - Preserve source information strongly, but keep the JSON valid and structured.
 - Organize the main document content cleanly. Do not create an oversized malformed JSON response.
-- Important details must be represented clearly; any remaining raw details will be checked by the source preservation guard after reconstruction.- Do not compress operational, contact, financial, legal, technical, tabular, visual, or instruction-based information into vague summaries.
+- Important details must be represented clearly; any remaining raw details will be checked by the source preservation guard after reconstruction.
+- Do not compress operational, contact, financial, legal, technical, tabular, visual, or instruction-based information into vague summaries.
 - If the source has contact names, phone numbers, email addresses, locations, quantities, dates, rates, declaration fields, remarks, warnings, or conditions, preserve them explicitly.
 - If the source contains screenshot-based text visible through vision notes, convert that text into normal document content.
 - If the source has more information than the template style can comfortably hold, create additional sections rather than omitting details.
