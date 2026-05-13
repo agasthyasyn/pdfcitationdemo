@@ -4104,9 +4104,7 @@ function wrapText(text, font, size, maxWidth) {
   if (line) lines.push(line);
   return lines;
 }
-    if (line) lines.push(line);
-    return lines;
-  }
+
 
 function drawWrappedParagraph(text, options = {}) {
   const clean = sanitizePdfText(normalizeLine(text || ""));
