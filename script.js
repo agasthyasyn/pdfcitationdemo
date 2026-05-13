@@ -2263,24 +2263,24 @@ function buildTemplateStyleProfile(templatePdf) {
       avoidDebugLanguage: true
     },
 
+    layoutGuidance: {
+      titlePlacement: "top",
+      titleWeight: "bold",
+      headingTreatment: hasNumberedSections ? "numbered_bold" : "bold_section_heading",
+      summaryTreatment: detectLikelySummaryTable(templatePdf)
+        ? "key_value_table"
+        : "key_value_lines",
+      sectionSpacing: sampleText.length > 6000 ? "compact" : "comfortable",
+      tableTreatment: detectLikelyTables(templatePdf)
+        ? "structured_table"
+        : "simple_rows",
+      imageTreatment: "captioned_inline",
+      pageStyle: "clean_business_document"
+    },
+
     instruction:
       "This template is only a style and presentation reference. Do not copy its facts. Do not force source content into the exact same fields or section names."
   };
-}
-
-layoutGuidance: {
-  titlePlacement: "top",
-  titleWeight: "bold",
-  headingTreatment: hasNumberedSections ? "numbered_bold" : "bold_section_heading",
-  summaryTreatment: detectLikelySummaryTable(templatePdf)
-    ? "key_value_table"
-    : "key_value_lines",
-  sectionSpacing: sampleText.length > 6000 ? "compact" : "comfortable",
-  tableTreatment: detectLikelyTables(templatePdf)
-    ? "structured_table"
-    : "simple_rows",
-  imageTreatment: "captioned_inline",
-  pageStyle: "clean_business_document"
 }
 
 function detectLikelySummaryTable(templatePdf) {
