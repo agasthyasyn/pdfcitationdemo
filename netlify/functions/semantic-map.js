@@ -110,9 +110,9 @@ function buildPagesText(pages) {
 }
 
 function getMaxOutputTokens(mode) {
-  if (mode === "vision_page") return 3500;
-  if (mode === "reconstruct_document") return 9000;
-  return 5000;
+  if (mode === "vision_page") return 4500;
+  if (mode === "reconstruct_document") return 20000;
+  return 10000;
 }
 
 function buildPrompt(payload) {
@@ -238,13 +238,12 @@ Important:
 - Do not invent missing values.
 - Do not assume this is a port document.
 - Do not use country lists, vessel lists, port lists, or any domain-specific fixed schema.
-- Preserve source information as completely as possible.
-- The rough import may be imperfect, misaligned, duplicated, or partially wrong.
-- Use semantic reasoning to rebuild the source into a clean, meaningful document.
-- Use image/vision notes when screenshots, scanned pages, charts, photos, maps, or visual text are present.
-- If an image contains readable word-based information in the vision notes, convert that information into clean paragraphs, lists, tables, or sections.
-- If an image is a photo/chart/map/visual reference, preserve it as an image block with sourcePage and caption.
-- Do not output system notes, audit notes, rough import labels, source import labels, or template explanations.
+- Preserve source information exhaustively.
+- Do not compress operational, contact, financial, legal, technical, tabular, visual, or instruction-based information into vague summaries.
+- If the source has contact names, phone numbers, email addresses, locations, quantities, dates, rates, declaration fields, remarks, warnings, or conditions, preserve them explicitly.
+- If the source contains screenshot-based text visible through vision notes, convert that text into normal document content.
+- If the source has more information than the template style can comfortably hold, create additional sections rather than omitting details.
+- You may reorganize and clean the source, but you must not reduce the factual coverage.
 
 Return valid JSON only. No markdown. No code fences.
 
